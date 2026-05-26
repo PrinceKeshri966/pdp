@@ -1,0 +1,429 @@
+{
+  "meta_has_cta": {
+    "term": "Has CTA",
+    "meaning": "CTA means Call-to-Action — a short line that tells the visitor what to do next, like 'Shop Now' or 'Free Shipping'. In meta description, it appears under your title on Google.",
+    "ok": "Your meta description encourages clicks with a clear action (Shop Now, Free shipping, etc.).",
+    "fail": "Google shows your page with plain text — no reason for shoppers to click from search results.",
+    "fix": "Add one action line in meta description, e.g. \"Shop premium jeans today — Free shipping on orders above ₹999.\""
+  },
+  "headings_logical_hierarchy": {
+    "term": "Logical Hierarchy",
+    "meaning": "Headings should follow order: one H1 (main title), then H2 (sections), then H3 (sub-sections). Skipping levels (H1 then H3) confuses Google and readers.",
+    "ok": "Headings follow a clear structure — easy for Google and customers to scan.",
+    "fail": "Headings jump levels or are out of order — search engines may not understand page structure.",
+    "fix": "Use one H1 (product name), then H2 for sections (Description, Reviews, FAQ), then H3 for sub-points."
+  },
+  "headings_keywords": {
+    "term": "Keywords in Headings",
+    "meaning": "Your target search words (e.g. 'men's jeans') should appear naturally in H2/H3 section headings — not stuffed, but clearly present.",
+    "ok": "Your main search terms appear in H2/H3 headings — helps ranking for those queries.",
+    "fail": "Headings don't include your target keywords — you miss SEO signals in subheadings.",
+    "fix": "Add natural keyword phrases in section headings, e.g. \"Men's Slim Fit Jeans — Fabric & Fit\"."
+  },
+  "kw_in_title": {
+    "term": "In Title",
+    "meaning": "The title tag is the blue clickable headline on Google. Your main keyword should appear here so Google knows what the page is about.",
+    "ok": "Your main keyword appears in the page title shown on Google.",
+    "fail": "Title tag doesn't include your primary keyword — harder to rank for that search term.",
+    "fix": "Put brand + primary keyword first in title, e.g. \"Killer Jeans | Men's Slim Fit Blue Denim\"."
+  },
+  "kw_in_h1": {
+    "term": "In H1",
+    "meaning": "H1 is the biggest heading visible on the page. It should include your primary keyword because Google treats it as the main topic of the page.",
+    "ok": "The main heading on the page includes your target keyword.",
+    "fail": "H1 doesn't match what people search for — Google may not know this page's main topic.",
+    "fix": "Make H1 the product name + key attribute, e.g. \"Men's Slim Fit Stretch Jeans — Dark Blue\"."
+  },
+  "kw_in_meta": {
+    "term": "In Meta",
+    "meaning": "Meta description is the 1–2 line summary under your title on Google. Including your keyword here helps relevance and click-through.",
+    "ok": "Meta description includes your target keyword — reinforces relevance in search snippets.",
+    "fail": "Meta description missing your main keyword — snippet may look generic in search results.",
+    "fix": "Weave the primary keyword naturally into your 150–160 character meta description."
+  },
+  "kw_in_first_100": {
+    "term": "First 100 Words",
+    "meaning": "Google reads the opening paragraph first. Mentioning your main keyword early signals that the page truly covers that topic.",
+    "ok": "Your opening paragraph mentions the main keyword early — good for SEO relevance.",
+    "fail": "First paragraph doesn't mention what the page is about — weaker topical signal for Google.",
+    "fix": "Start product description with the product type + key benefit in the first 2 sentences."
+  },
+  "content_adequate": {
+    "term": "Adequate Content",
+    "meaning": "Product pages need enough unique text (typically 300+ words). Very short pages look 'thin' to Google and rank poorly.",
+    "ok": "Page has sufficient text — Google sees this as a real, useful product page.",
+    "fail": "Content is too thin (very few words) — Google may treat this as low-quality or duplicate.",
+    "fix": "Add 300+ words: fabric details, fit guide, styling tips, care instructions, and use cases."
+  },
+  "content_unique": {
+    "term": "Unique Content",
+    "meaning": "Your description should be original — not copy-pasted from the manufacturer or another website. Duplicate text hurts rankings.",
+    "ok": "Description reads original — not copied from manufacturer or other sites.",
+    "fail": "Content looks generic or duplicated — risk of lower rankings vs competitors.",
+    "fix": "Rewrite description in your brand voice. Add unique selling points only your store offers."
+  },
+  "schema_product": {
+    "term": "Product Schema",
+    "meaning": "Structured data (JSON-LD code) that tells Google this is a product with price, availability, and reviews — enables star ratings and price in search results.",
+    "ok": "Product JSON-LD is present — Google can show price, rating, and availability in search.",
+    "fail": "No product schema — you miss rich results (stars, price) in Google search.",
+    "fix": "Add Product schema with name, price, availability, image, and brand. Check AutoFix tab for ready code."
+  },
+  "tech_canonical": {
+    "term": "Canonical Tag",
+    "meaning": "A canonical tag tells Google: 'This is the official URL for this page.' It prevents duplicate URLs (with tracking params) from splitting your SEO ranking.",
+    "ok": "Canonical URL is set — Google knows which version of this page to index.",
+    "fail": "No canonical tag — duplicate URLs (with ?utm, filters) may compete and split ranking.",
+    "fix": "Add <link rel=\"canonical\" href=\"YOUR-CLEAN-URL\"> in the page <head> pointing to the main product URL."
+  },
+  "tech_og": {
+    "term": "Open Graph",
+    "meaning": "Open Graph meta tags control how your link looks when shared on WhatsApp, Facebook, LinkedIn — title, image, and description in the preview card.",
+    "ok": "OG tags are set — link previews look good when shared on WhatsApp, Facebook, etc.",
+    "fail": "Missing Open Graph — shared links may show wrong image, title, or no preview.",
+    "fix": "Add og:title, og:description, og:image, og:url meta tags for this product page."
+  },
+  "tech_twitter": {
+    "term": "Twitter Card",
+    "meaning": "Twitter/X card tags ensure your product link shows a rich preview with image and title when posted on X (Twitter).",
+    "ok": "Twitter card meta tags present — rich previews when link is posted on X.",
+    "fail": "No Twitter card tags — posts may show a plain URL without product image.",
+    "fix": "Add twitter:card, twitter:title, twitter:description, twitter:image meta tags."
+  },
+  "tech_hreflang": {
+    "term": "Hreflang",
+    "meaning": "Hreflang tags tell Google which language or country version of a page to show (e.g. English-IN vs Arabic-AE). Needed only for multi-region stores.",
+    "ok": "Hreflang tags tell Google which language/region version to show.",
+    "fail": "No hreflang — if you sell in multiple countries/languages, wrong version may rank.",
+    "fix": "Only needed for multi-language stores. Add hreflang links for each locale version of this page."
+  },
+  "tech_images_optimized": {
+    "term": "Optimized Images",
+    "meaning": "Images should be compressed and reasonably sized. Huge image files slow page load — bad for mobile users and Google rankings.",
+    "ok": "Product images appear reasonably sized — page loads faster.",
+    "fail": "Very large images detected — slows page load and hurts mobile experience + SEO.",
+    "fix": "Compress images to WebP, max ~200KB each. Use responsive srcset for different screen sizes."
+  },
+  "tech_lazy_loading": {
+    "term": "Lazy Loading",
+    "meaning": "Lazy loading delays loading images until the user scrolls near them — makes the page open faster on mobile.",
+    "ok": "Images below the fold load lazily — faster initial page speed.",
+    "fail": "All images load at once — slower first paint, especially on mobile.",
+    "fix": "Add loading=\"lazy\" to images below the fold (not the main hero product image)."
+  },
+  "rag_citable": {
+    "term": "Highly Citable by AI",
+    "meaning": "AI tools (ChatGPT, Perplexity) prefer clear, factual sentences they can quote. Vague marketing copy is harder for AI to cite or recommend.",
+    "ok": "Clear facts and statements — ChatGPT/Perplexity can quote your page as a source.",
+    "fail": "Content is vague — AI assistants are less likely to recommend or cite your product.",
+    "fix": "Add specific facts: material %, weight, dimensions, warranty, origin, and clear product benefits."
+  },
+  "rag_uvp": {
+    "term": "Unique Value Proposition",
+    "meaning": "What makes YOUR product different from every other seller? AI and shoppers need a clear reason to choose you over competitors.",
+    "ok": "Page explains why YOUR product is different from generic alternatives.",
+    "fail": "Sounds like any other listing — AI and shoppers can't see why to choose you.",
+    "fix": "State what makes this product special: patented fabric, brand heritage, exclusive fit, etc."
+  },
+  "rag_factual": {
+    "term": "Factual Claims Present",
+    "meaning": "Concrete facts (material %, dimensions, warranty, origin) that AI can verify and repeat — not just vague adjectives like 'premium quality'.",
+    "ok": "Page includes concrete specs and claims AI can verify or repeat.",
+    "fail": "Mostly marketing fluff — AI engines prefer factual, citable content.",
+    "fix": "Add measurable details: \"98% cotton, 2% elastane\", \"30-day return\", \"Made in India\"."
+  },
+  "aeo_conversational": {
+    "term": "Conversational Readiness",
+    "meaning": "Content written the way people ask questions — 'Do these shrink after wash?' — performs better in voice search and AI answers.",
+    "ok": "Content answers questions naturally — good for voice search and AI answers.",
+    "fail": "Reads like a spec sheet only — misses how real shoppers ask questions.",
+    "fix": "Add FAQ-style sentences: \"Will these jeans shrink after wash?\" with a direct answer."
+  },
+  "aeo_llm_snippet": {
+    "term": "LLM Snippet Ready",
+    "meaning": "A concise 2–3 sentence summary that AI search engines can pull directly into their answers about your product.",
+    "ok": "Content has concise answer blocks AI can pull into responses.",
+    "fail": "No clear snippet-worthy paragraphs — less visibility in AI search (ChatGPT, Gemini).",
+    "fix": "Add a 2–3 sentence summary at top: what it is, who it's for, key benefit."
+  },
+  "aeo_not_commodity": {
+    "term": "Not Commodity Content",
+    "meaning": "Generic manufacturer copy that every retailer uses makes your page interchangeable. AI treats it as the same product everywhere.",
+    "ok": "Content feels specific to this product — not copy-pasted manufacturer text.",
+    "fail": "Generic manufacturer copy — AI treats it as interchangeable with every other seller.",
+    "fix": "Rewrite with brand story, styling advice, and customer use cases unique to your store."
+  },
+  "aeo_unique_perspective": {
+    "term": "Unique Perspective",
+    "meaning": "Your brand's own voice, styling tips, or expert opinion — something only you can say, not copied from a catalog.",
+    "ok": "Your brand's point of view comes through — builds trust and differentiation.",
+    "fail": "No distinct voice — page could belong to any retailer selling the same SKU.",
+    "fix": "Add \"Why we love this\" section, stylist notes, or brand-specific care tips."
+  },
+  "faq_found": {
+    "term": "FAQs Found",
+    "meaning": "A FAQ section answers common buyer questions on the page itself — helps Google, AI search, and reduces support tickets.",
+    "ok": "FAQs are present — helps AI answers and reduces customer support questions.",
+    "fail": "No FAQ section — missed chance to rank for question searches and AI queries.",
+    "fix": "Add 5–8 FAQs: sizing, shrinkage, returns, styling, fabric care."
+  },
+  "faq_conversational": {
+    "term": "Conversational FAQ Format",
+    "meaning": "FAQs written as real questions ('Do these run small?') not corporate jargon ('Size accuracy information').",
+    "ok": "Questions written how customers actually ask — better for AI and voice search.",
+    "fail": "FAQs are stiff or missing — AI can't match user questions to your content.",
+    "fix": "Use real questions: \"Do these run true to size?\" not \"Size accuracy information\"."
+  },
+  "faq_schema": {
+    "term": "FAQ Schema Markup",
+    "meaning": "FAQ structured data code that can make your Q&A appear directly in Google search results as expandable dropdowns.",
+    "ok": "FAQ structured data added — can show Q&A directly in Google results.",
+    "fail": "FAQs exist but no schema — Google won't show expandable FAQ in search.",
+    "fix": "Add FAQPage JSON-LD schema with each question and answer. See AutoFix tab."
+  },
+  "speakable_schema": {
+    "term": "Speakable Schema",
+    "meaning": "Markup that tells voice assistants (Alexa, Google Assistant) which paragraph to read aloud when someone asks about your product.",
+    "ok": "Speakable markup helps voice assistants read key content aloud.",
+    "fail": "No speakable schema — voice search (Alexa, Google Assistant) may skip your page.",
+    "fix": "Add speakable structured data pointing to key summary paragraphs."
+  },
+  "cta_found": {
+    "term": "CTA Found",
+    "meaning": "A clear Add to Cart or Buy Now button must be visible so visitors know how to purchase.",
+    "ok": "Primary purchase button is present on the page.",
+    "fail": "No clear buy button found — customers may leave without knowing how to purchase.",
+    "fix": "Add a prominent \"Add to Cart\" or \"Buy Now\" button near product title and price."
+  },
+  "cta_above_fold": {
+    "term": "Above the Fold",
+    "meaning": "'Above the fold' means visible on the first screen without scrolling — critical on mobile where most shoppers browse.",
+    "ok": "Buy button visible on first screen — mobile and desktop users can act immediately.",
+    "fail": "Customer must scroll to find buy button — increases drop-off on mobile.",
+    "fix": "Move Add to Cart above the fold on mobile. Keep it visible next to price and size selector."
+  },
+  "cta_sticky": {
+    "term": "Sticky on Scroll",
+    "meaning": "A buy button or bar that stays fixed at the bottom while scrolling — so customers can purchase anytime on long pages.",
+    "ok": "Buy button stays visible while scrolling — easy to purchase anytime.",
+    "fail": "CTA disappears when scrolling — users on long pages may forget to buy.",
+    "fix": "Add a sticky bottom bar on mobile with price + Add to Cart that appears on scroll."
+  },
+  "img_angles": {
+    "term": "Multiple Angles",
+    "meaning": "Show the product from front, back, side, and detail shots — online shoppers can't touch the product, so photos must build trust.",
+    "ok": "Several photos show the product from different views — builds confidence.",
+    "fail": "Only one or two images — shoppers can't fully inspect the product online.",
+    "fix": "Add front, back, side, detail (fabric/stitching), and on-model shots — minimum 4–6 images."
+  },
+  "img_zoom": {
+    "term": "Zoom",
+    "meaning": "Click or pinch-to-zoom lets customers inspect fabric texture, stitching, and quality up close.",
+    "ok": "Customers can zoom in to see fabric texture and details.",
+    "fail": "No zoom — shoppers can't inspect quality, especially for fashion/fabric products.",
+    "fix": "Enable click-to-zoom or pinch-zoom on product gallery images."
+  },
+  "img_lifestyle": {
+    "term": "Lifestyle Images",
+    "meaning": "Photos of the product being worn or used in real life — helps customers imagine how it will look on them.",
+    "ok": "Lifestyle photos show how the product looks when worn — helps imagination.",
+    "fail": "Only packshot/flat images — harder for customers to visualize fit and style.",
+    "fix": "Add 2–3 on-model photos in real-life settings (casual, office, etc.)."
+  },
+  "img_video": {
+    "term": "Video",
+    "meaning": "A short product video showing fit, movement, and fabric drape — one of the highest-impact conversion elements on a PDP.",
+    "ok": "Video shows product in motion — increases trust and conversion.",
+    "fail": "No video — missing a high-impact way to show fit, drape, and quality.",
+    "fix": "Add a 15–30 sec clip: model walking, fabric close-up, or 360° spin."
+  },
+  "trust_reviews": {
+    "term": "Reviews",
+    "meaning": "Customer reviews are social proof — new visitors trust a product more when they see others have bought and rated it.",
+    "ok": "Reviews are shown — social proof helps new buyers decide.",
+    "fail": "No reviews visible — new visitors have no proof others bought and liked this.",
+    "fix": "Enable product reviews. If new, import/sync reviews or show \"Be the first to review\"."
+  },
+  "trust_rating": {
+    "term": "Rating Visible",
+    "meaning": "Star rating (e.g. 4.5★ from 120 reviews) displayed near the product title — instant trust signal at a glance.",
+    "ok": "Average rating is visible near product title — quick trust signal.",
+    "fail": "Rating hidden or missing — shoppers can't gauge quality at a glance.",
+    "fix": "Show star rating + review count next to product title and price."
+  },
+  "trust_return": {
+    "term": "Return Policy",
+    "meaning": "Clear return/exchange policy visible on the product page — reduces fear of ordering the wrong size, especially in fashion.",
+    "ok": "Return/exchange policy is easy to find — reduces purchase anxiety.",
+    "fail": "Return policy not visible on PDP — customers worry about being stuck with wrong size.",
+    "fix": "Add \"Easy 30-day returns\" link or badge near Add to Cart button."
+  },
+  "trust_security": {
+    "term": "Security Badges",
+    "meaning": "SSL lock, secure payment icons, COD/UPI badges near checkout — reassures customers their payment is safe.",
+    "ok": "Secure checkout badges visible — reassures customers about payment safety.",
+    "fail": "No trust badges — some customers hesitate to enter card details.",
+    "fix": "Show SSL, secure payment icons, COD option, or UPI badges near checkout CTA."
+  },
+  "info_size_guide": {
+    "term": "Size Guide",
+    "meaning": "A size chart with measurements (chest, waist, length) helps customers pick the right size and reduces returns.",
+    "ok": "Size guide helps customers pick the right fit — fewer returns.",
+    "fail": "No size guide — fashion PDPs without sizing info have high return rates.",
+    "fix": "Add size chart popup with measurements in inches/cm and fit tips."
+  },
+  "info_material": {
+    "term": "Material Info",
+    "meaning": "Fabric composition (e.g. 98% Cotton, 2% Elastane) and care instructions — essential for fashion and home products.",
+    "ok": "Fabric breakdown is shown — customers know what they're buying.",
+    "fail": "Material info missing — shoppers can't judge comfort, care, or quality.",
+    "fix": "List fabric composition: \"98% Cotton, 2% Elastane\" plus care instructions."
+  },
+  "info_fit": {
+    "term": "Fit Description",
+    "meaning": "Explains whether the product is slim, regular, or relaxed fit — and whether to size up or down.",
+    "ok": "Fit type explained (slim, regular, relaxed) — helps size decisions.",
+    "fail": "No fit guidance — customers guess size and often order wrong.",
+    "fix": "State fit type and advice: \"Slim fit — size up if you prefer relaxed fit.\""
+  },
+  "info_specs": {
+    "term": "Specs Table",
+    "meaning": "A structured table of key specs (rise, closure, pockets, care) — easier to scan than buried paragraphs.",
+    "ok": "Structured specs table makes details easy to scan and compare.",
+    "fail": "No specs table — key details buried in paragraphs or missing.",
+    "fix": "Add a table: Rise, Fit, Closure, Pockets, Care, Country of origin."
+  },
+  "urgency_stock": {
+    "term": "Stock Counter",
+    "meaning": "'Only 3 left in stock' creates urgency — but must be real inventory, never fake.",
+    "ok": "Low stock message creates urgency — can boost conversion.",
+    "fail": "No stock signal — missed urgency trigger (optional but helpful).",
+    "fix": "Show \"Only 3 left\" when stock is low. Don't fake it — use real inventory."
+  },
+  "urgency_limited": {
+    "term": "Limited Time Offer",
+    "meaning": "A countdown or deadline ('Offer ends Sunday') encourages faster purchase decisions during sales.",
+    "ok": "Time-bound offer visible — encourages faster purchase decision.",
+    "fail": "No time-limited offer shown — optional nudge for conversion.",
+    "fix": "If running a sale, show countdown or \"Offer ends Sunday\" near price."
+  },
+  "urgency_social": {
+    "term": "Social Proof Counter",
+    "meaning": "'12 people viewing this' or '48 sold today' — live activity signals that others trust and buy this product.",
+    "ok": "\"X people viewing\" or \"Y sold today\" builds FOMO and trust.",
+    "fail": "No live social proof — page feels static vs competitors who show activity.",
+    "fix": "Add \"12 people viewing this\" or \"48 sold in last 24 hours\" if your platform supports it."
+  },
+  "checkout_guest": {
+    "term": "Guest Checkout",
+    "meaning": "Allowing purchase without forced account signup — many shoppers abandon cart if they must register first.",
+    "ok": "Customers can buy without forced account creation — lower friction.",
+    "fail": "Forced signup implied — many shoppers abandon at checkout.",
+    "fix": "Offer \"Checkout as Guest\" option. Collect email only for order tracking."
+  },
+  "checkout_one_click": {
+    "term": "One-Click Buy",
+    "meaning": "Express payment options (UPI, Apple Pay, Shop Pay) that complete purchase in one tap — fewer steps = more sales.",
+    "ok": "Express checkout (Shop Pay, UPI, etc.) reduces steps to purchase.",
+    "fail": "Multi-step checkout only — every extra click loses customers.",
+    "fix": "Add Shop Pay, Apple Pay, Google Pay, or UPI one-tap where possible."
+  },
+  "tech_mobile": {
+    "term": "Mobile-friendly page",
+    "meaning": "Your page works well on phones. Google uses mobile-first indexing, so a bad mobile page hurts rankings.",
+    "ok": "Page is usable on mobile — good for Google rankings and phone shoppers.",
+    "fail": "Mobile experience is weak — you lose rankings and phone sales.",
+    "fix": "Use responsive theme, large tap targets, readable font size, and test on a real phone."
+  },
+  "tech_pagination": {
+    "term": "No pagination issues",
+    "meaning": "Pagination splits products across pages. Wrong setup can confuse Google and create duplicate content.",
+    "ok": "Pagination is set up correctly or not needed on this product page.",
+    "fail": "Pagination may confuse search engines or create duplicate URLs.",
+    "fix": "Use canonical tags; product pages should have one clear canonical URL."
+  },
+  "geo_perplexity": {
+    "term": "Perplexity can cite this page",
+    "meaning": "Perplexity is an AI search engine. Your page needs clear facts and FAQs to get cited.",
+    "ok": "Content is structured so Perplexity can quote your product.",
+    "fail": "Page is too generic — Perplexity will cite competitors instead.",
+    "fix": "Add specific FAQs, specs, and unique selling points in plain sentences."
+  },
+  "geo_sge": {
+    "term": "Google AI Overview ready",
+    "meaning": "Google AI Overviews show AI answers at the top of search. Clear answers and schema help you get featured.",
+    "ok": "Page format fits Google AI Overview snippets.",
+    "fail": "Page may not qualify for AI Overview inclusion.",
+    "fix": "Add FAQ schema and direct answers in H2 sections."
+  },
+  "geo_direct_answer": {
+    "term": "Direct answer format",
+    "meaning": "Content answers questions in the first 1–2 sentences. AI engines prefer this format.",
+    "ok": "Key questions are answered upfront in clear sentences.",
+    "fail": "Answers are buried in fluff — AI skips your page.",
+    "fix": "Start each section with a direct answer, then add detail."
+  },
+  "schema_breadcrumb": {
+    "term": "Breadcrumb schema",
+    "meaning": "Breadcrumb shows path like Home > Men > Jeans. Schema helps Google display it in search.",
+    "ok": "Breadcrumb schema helps Google show your category path.",
+    "fail": "No breadcrumb schema — missed context in search.",
+    "fix": "Add BreadcrumbList JSON-LD matching your visible breadcrumb."
+  },
+  "schema_review": {
+    "term": "Review schema",
+    "meaning": "Structured data for star ratings — can show stars in Google results.",
+    "ok": "Review schema may enable star ratings in search.",
+    "fail": "No review schema — stars won't show in Google.",
+    "fix": "Add AggregateRating schema with real review count and rating."
+  },
+  "price_charm": {
+    "term": "Charm pricing",
+    "meaning": "Prices ending in 9 or 99 feel like a better deal (₹999 vs ₹1000).",
+    "ok": "Charm pricing can lift perceived value.",
+    "fail": "Round pricing only — small psychological lift missed.",
+    "fix": "Consider ₹1,999 instead of ₹2,000 if it fits your brand."
+  },
+  "price_anchor": {
+    "term": "Anchor price",
+    "meaning": "Showing original price crossed out next to sale price makes the deal feel bigger.",
+    "ok": "Anchor price makes discount feel significant.",
+    "fail": "No compare-at price — discount feels weaker.",
+    "fix": "Show MRP struck through next to sale price when on offer."
+  },
+  "trust_moneyback": {
+    "term": "Money-back guarantee",
+    "meaning": "Clear refund guarantee reduces purchase fear.",
+    "ok": "Guarantee visible — builds confidence to buy.",
+    "fail": "No guarantee messaging — shoppers worry about returns.",
+    "fix": "Add 30-day easy returns or money-back guarantee near Add to Cart."
+  },
+  "emotion_identity": {
+    "term": "Identity alignment",
+    "meaning": "Copy speaks to who the customer is, not just what the product is.",
+    "ok": "Customer sees themselves in your message.",
+    "fail": "Generic text — no emotional connection.",
+    "fix": "Add who this product is for and what lifestyle it fits."
+  },
+  "emotion_aspirational": {
+    "term": "Aspirational language",
+    "meaning": "Words that paint the life the customer wants, not only specs.",
+    "ok": "Copy inspires beyond specs.",
+    "fail": "Only functional description — weaker pull.",
+    "fix": "Add how they will feel using the product."
+  },
+  "decoy_pricing": {
+    "term": "Decoy pricing",
+    "meaning": "Three options where the middle looks like best value guides shoppers.",
+    "ok": "Tiered options guide shoppers to preferred SKU.",
+    "fail": "Single option only — no anchoring between variants.",
+    "fix": "Highlight a recommended variant as Best value."
+  },
+  "peak_end_rule": {
+    "term": "Strong ending on page",
+    "meaning": "People remember the last thing they read. Strong FAQ or CTA at bottom helps conversion.",
+    "ok": "Page ends with trust or action.",
+    "fail": "Weak ending — missed final persuasion.",
+    "fix": "End with FAQ, guarantee, or strong CTA above footer."
+  }
+}

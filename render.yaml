@@ -1,0 +1,19 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Connect repo: PrinceKeshri966/PDP-DEV → New Web Service → use this file or manual settings below.
+services:
+  - type: web
+    name: pdp-dev
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: DEV_AUTH_BYPASS
+        value: "false"
