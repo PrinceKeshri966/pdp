@@ -69,6 +69,27 @@ cd PDP-DEV
 3. **Redeploy** Render (or it will pick up env changes automatically).
 4. Open your Render URL → **Continue with Google** → home page with your Google name.
 
+### Render deploy failed: `password authentication failed for user 'neondb_owner'`
+
+The **build succeeded**; Neon rejected the password in `DATABASE_URL` on Render.
+
+1. Open **Neon** → your project → **Connect** → copy connection string → **Show password**.
+2. Convert exactly:
+   ```text
+   postgresql://neondb_owner:YOUR_PASSWORD@ep-....neon.tech/neondb?sslmode=require
+   ```
+   to:
+   ```text
+   postgresql+asyncpg://neondb_owner:YOUR_PASSWORD@ep-....neon.tech/neondb?ssl=require
+   ```
+3. **Render** → your service → **Environment** → set `DATABASE_URL` to that full string (no quotes, no spaces at ends).
+4. If unsure, use Neon **Reset password**, update `DATABASE_URL` on Render with the new password.
+5. **Manual Deploy** → Deploy latest commit.
+
+Local `.env` working does **not** auto-sync to Render — you must paste the same value into Render env vars.
+
+---
+
 ### Tables on Neon
 
 Tables are created automatically on startup (`init_db`). Expected tables: `tenants`, `users`, `analysis_reports`, `blueprints`.

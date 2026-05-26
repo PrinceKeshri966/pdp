@@ -28,7 +28,20 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("startup.begin", app=settings.app_name, env=settings.app_env)
-    await init_db()
+    try:
+        await init_db()
+    except Exception as exc:
+        err = str(exc).lower()
+        if "password authentication failed" in err or "invalidpassword" in type(exc).__name__.lower():
+            logger.error(
+                "startup.db_failed",
+                hint=(
+                    "DATABASE_URL on Render is wrong. Copy fresh connection string from Neon, "
+                    "change postgresql:// to postgresql+asyncpg://, add ?ssl=require, "
+                    "paste in Render Environment (no quotes)."
+                ),
+            )
+        raise
     logger.info("startup.db_ready")
     yield
     logger.info("shutdown.begin")
