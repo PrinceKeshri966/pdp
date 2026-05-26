@@ -20,7 +20,7 @@ import time
 from app.agents.claude_client import claude
 from app.agents.json_utils import safe_json_parse
 from app.agents.model_router import get_model
-from app.agents.state import AgentState
+from app.agents.state import AgentState, state_dict
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -74,8 +74,8 @@ Required JSON schema:
 
 async def blueprint_agent(state: AgentState) -> AgentState:
     """Generate the final PDP blueprint by synthesising all prior agent outputs."""
-    understanding = state.get("business_understanding", {})
-    research = state.get("pdp_research", {})
+    understanding = state_dict(state, "business_understanding")
+    research = state_dict(state, "pdp_research")
     business_input = state.get("business_input", "")
 
     if not understanding or not research:

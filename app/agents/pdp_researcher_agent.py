@@ -17,7 +17,7 @@ import time
 from app.agents.claude_client import claude
 from app.agents.json_utils import safe_json_parse
 from app.agents.model_router import get_model
-from app.agents.state import AgentState
+from app.agents.state import AgentState, state_dict
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -68,7 +68,7 @@ Required JSON schema:
 
 async def pdp_researcher_agent(state: AgentState) -> AgentState:
     """Research best-practice PDP patterns for the identified category."""
-    understanding = state.get("business_understanding", {})
+    understanding = state_dict(state, "business_understanding")
     if not understanding:
         state["errors"] = state.get("errors", []) + [
             "pdp_researcher_agent: no business_understanding"

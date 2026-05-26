@@ -111,8 +111,16 @@ async def scraper_agent(state: AgentState) -> AgentState:
                 chars=len(content),
                 threshold=_JINA_THIN_THRESHOLD,
             )
-            content = await _fetch_with_playwright(url)
-            method = "playwright"
+            try:
+                content = await _fetch_with_playwright(url)
+                method = "playwright"
+            except Exception as pw_exc:
+                # Render/Docker often has no Playwright browsers — keep Jina output
+                logger.warning(
+                    "scraper_agent.playwright_skip_thin",
+                    error=str(pw_exc),
+                    fallback_chars=len(content),
+                )
 
     except httpx.HTTPError as exc:
         logger.warning("scraper_agent.jina_failed", error=str(exc))

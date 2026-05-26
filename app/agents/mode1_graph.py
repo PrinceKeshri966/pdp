@@ -169,6 +169,6 @@ async def run_mode1(
         "mode1.done",
         status=final_state.get("status"),
         agents_ran=len(final_state.get("agent_reports", [])),
-        health_score=final_state.get("final_diagnosis", {}).get("overall_health_score"),
+        health_score=(final_state.get("final_diagnosis") or {}).get("overall_health_score"),
     )
     return final_state

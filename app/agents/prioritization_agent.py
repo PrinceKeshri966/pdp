@@ -60,14 +60,18 @@ Required JSON schema:
 
 async def prioritization_agent(state: AgentState) -> AgentState:
     """Synthesize all analysis reports into unified prioritized diagnosis."""
-    seo = state.get("seo_report", {})
-    aeo = state.get("aeo_report", {})
-    ux = state.get("ux_report", {})
-    competitor = state.get("competitor_report", {})
-    psychology = state.get("psychology_report", {})
+    # Keys exist but may be None until parallel agents finish — use state_dict()
+    seo = state_dict(state, "seo_report")
+    aeo = state_dict(state, "aeo_report")
+    ux = state_dict(state, "ux_report")
+    competitor = state_dict(state, "competitor_report")
+    psychology = state_dict(state, "psychology_report")
 
     if not any([seo, aeo, ux]):
-        return {"errors": ["prioritization_agent: no analysis reports available"]}
+        return {
+            "errors": ["prioritization_agent: no analysis reports available"],
+            "status": "failed",
+        }
 
     logger.info("prioritization_agent.start", model=_MODEL)
     t0 = time.monotonic()
