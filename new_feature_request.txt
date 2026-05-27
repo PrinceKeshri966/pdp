@@ -1,0 +1,27 @@
+I need to upgrade Mode 2 in my FastAPI + React app. Please perform these steps, editing files carefully to maintain current architecture.
+
+Goal: Transform Mode 2 into a Chat Interface that supports text and file uploads (.pdf, .docx, .pptx).
+
+Backend Tasks:
+
+Update app/agents/state.py: Add uploaded_context: Optional[str] and chat_history: list[dict] to AgentState.
+
+Create app/utils/file_parser.py (use the provided extract_text_from_file function).
+
+Update app/api/routes/analyze.py: Add a new endpoint POST /api/v1/chat/upload. It should use extract_text_from_file and return the parsed text.
+
+Update app/agents/business_agent.py: Modify the system prompt to accept uploaded_context. If it exists, inject it into the Claude prompt for better context-aware blueprinting.
+
+Frontend Tasks (index.html):
+
+In the view === 'MODE2_INPUT' section of index.html, replace the form with a Chat UI.
+
+Implement chatHistory state and a handleSendMessage function.
+
+Add a file upload button (paperclip icon) in the input bar. When a file is selected, call the new /api/v1/chat/upload endpoint, get the text, and append it as a system message to the chat.
+
+The chat UI should show user messages (right-aligned) and AI responses (left-aligned).
+
+Ensure the 'Generate Blueprint' logic triggers when the user submits or confirms the finalized brief in the chat.
+
+Also, please update requirements.txt with python-docx, pypdf, python-pptx, and pillow.
