@@ -70,12 +70,14 @@ def _issue_app_jwt(user: User) -> str:
     return token if isinstance(token, str) else token.decode()
 
 
-async def _ensure_tenant(db: AsyncSession) -> Tenant:
-    result = await db.execute(select(Tenant).limit(1))
-    tenant = result.scalar_one_or_none()
-    if tenant:
-        return tenant
-    tenant = Tenant(name="My Workspace", slug=f"ws-{secrets.token_hex(4)}")
+async def _create_user_tenant(db: AsyncSession, email: str, full_name: str | None) -> Tenant:
+    """Each user gets a private workspace (tenant)."""
+    slug_base = "".join(c for c in (email.split("@")[0] or "user") if c.isalnum())[:16] or "user"
+    display = (full_name or email.split("@")[0] or "My").strip()
+    tenant = Tenant(
+        name=f"{display}'s Workspace",
+        slug=f"{slug_base}-{secrets.token_hex(3)}",
+    )
     db.add(tenant)
     await db.flush()
     return tenant
@@ -176,7 +178,7 @@ async def google_callback(
     user = result.scalar_one_or_none()
 
     if user is None:
-        tenant = await _ensure_tenant(db)
+        tenant = await _create_user_tenant(db, email, profile.get("name"))
         user = User(
             clerk_user_id=clerk_user_id,
             tenant_id=tenant.id,

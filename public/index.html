@@ -327,6 +327,12 @@
             return `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
         }
 
+        function asArray(val) {
+            if (Array.isArray(val)) return val;
+            if (val == null || val === '') return [];
+            return [String(val)];
+        }
+
         function formatRelativeTime(iso) {
             if (!iso) return '';
             const diff = Date.now() - new Date(iso).getTime();
@@ -809,7 +815,7 @@
                 const breadcrumb = (pd.breadcrumb || []).length ? pd.breadcrumb.join(' › ') : `Home › ${category}`;
                 const primaryKeyword = (productName.split(/[\|–—-]/)[0] || category).trim();
                 const aeoRpt = result?.aeo_report || {};
-                const sampleQuery = (aeoRpt.top_ai_queries_missed || [])[0]
+                const sampleQuery = asArray(aeoRpt.top_ai_queries_missed)[0]
                     || `best ${category} to buy`;
                 const sampleFaq = (result?.generated_content?.faqs || [])[0]?.question
                     || `What makes ${productName} a good choice?`;
@@ -1671,9 +1677,11 @@
                                 };
 
                                 const AiOverviewMock = ({ productName, gaps, queries }) => {
+                                    const gapList = asArray(gaps);
+                                    const queryList = asArray(queries);
                                     const snippet = productData.description
                                         ? `${productName || 'This product'} — ${(productData.description || '').slice(0, 180)}...`
-                                        : gaps?.[0] || 'Your page lacks enough structured, citable content for AI engines to recommend your product confidently.';
+                                        : gapList[0] || 'Your page lacks enough structured, citable content for AI engines to recommend your product confidently.';
                                     return (
                                         <div className="border border-purple-200 rounded-xl overflow-hidden bg-gradient-to-br from-purple-50/80 to-white shadow-sm">
                                             <div className="px-4 py-2.5 bg-purple-100/60 flex items-center gap-2 text-xs font-bold text-purple-900">
@@ -1681,11 +1689,11 @@
                                             </div>
                                             <div className="p-4">
                                                 <p className="text-sm text-slate-700 leading-relaxed">{snippet}</p>
-                                                {(queries || []).length > 0 && (
+                                                {queryList.length > 0 && (
                                                     <div className="mt-4">
                                                         <p className="text-xs font-bold text-purple-700 uppercase mb-2">Queries you're missing</p>
                                                         <div className="flex flex-wrap gap-2">
-                                                            {(queries || []).slice(0, 5).map((q, i) => (
+                                                            {queryList.slice(0, 5).map((q, i) => (
                                                                 <span key={i} className="text-xs bg-white border border-purple-100 text-purple-700 px-2.5 py-1 rounded-full">"{q}"</span>
                                                             ))}
                                                         </div>
@@ -2020,7 +2028,7 @@
                                                             {(aeoRpt.eeat_score?.signals_missing || []).length > 0 && (
                                                                 <div className="mt-3 pt-3 border-t">
                                                                     <p className="text-xs font-bold text-red-600 mb-1">Missing signals</p>
-                                                                    <ul className="text-xs text-red-600 space-y-0.5">{(aeoRpt.eeat_score.signals_missing || []).slice(0, 4).map((s, i) => <li key={i}>• {s}</li>)}</ul>
+                                                                    <ul className="text-xs text-red-600 space-y-0.5">{asArray(aeoRpt.eeat_score?.signals_missing).slice(0, 4).map((s, i) => <li key={i}>• {s}</li>)}</ul>
                                                                 </div>
                                                             )}
                                                         </SectionCard>
@@ -2040,7 +2048,7 @@
                                                                 <CheckBadge val={aeoRpt.rag_readiness?.unique_value_proposition} checkId="rag_uvp" />
                                                                 <CheckBadge val={aeoRpt.rag_readiness?.factual_claims_present} checkId="rag_factual" />
                                                             </div>
-                                                            {(aeoRpt.rag_readiness?.issues || []).map((iss, i) => <p key={i} className="text-xs text-red-500 mt-2">• {iss}</p>)}
+                                                            {asArray(aeoRpt.rag_readiness?.issues).map((iss, i) => <p key={i} className="text-xs text-red-500 mt-2">• {iss}</p>)}
                                                         </SectionCard>
                                                         <SectionCard title="Content Quality for AI" rightElement={<span className="text-xs font-bold text-slate-400">Depth: {aeoRpt.content_quality?.content_depth || '—'}</span>}>
                                                             <div className="space-y-2">
@@ -2063,13 +2071,13 @@
                                                     </div>
                                                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                                         <SectionCard title="Gaps" icon="ph-warning">
-                                                            <ul className="space-y-2">{(aeoRpt.gaps || []).length ? (aeoRpt.gaps || []).map((g,i) => <li key={i} className="text-sm text-red-600 flex gap-2"><i className="ph ph-x shrink-0"></i>{g}</li>) : <li className="text-sm text-slate-400">No major gaps.</li>}</ul>
+                                                            <ul className="space-y-2">{asArray(aeoRpt.gaps).length ? asArray(aeoRpt.gaps).map((g,i) => <li key={i} className="text-sm text-red-600 flex gap-2"><i className="ph ph-x shrink-0"></i>{g}</li>) : <li className="text-sm text-slate-400">No major gaps.</li>}</ul>
                                                         </SectionCard>
                                                         <SectionCard title="AI Queries You're Missing" icon="ph-target">
-                                                            <div className="flex flex-wrap gap-2">{(aeoRpt.top_ai_queries_missed || []).length ? (aeoRpt.top_ai_queries_missed || []).map((q,i) => <span key={i} className="bg-purple-50 text-purple-700 border border-purple-100 px-3 py-1 rounded-full text-xs font-bold">{q}</span>) : <span className="text-sm text-slate-400">Run analysis to see missed queries.</span>}</div>
+                                                            <div className="flex flex-wrap gap-2">{asArray(aeoRpt.top_ai_queries_missed).length ? asArray(aeoRpt.top_ai_queries_missed).map((q,i) => <span key={i} className="bg-purple-50 text-purple-700 border border-purple-100 px-3 py-1 rounded-full text-xs font-bold">{q}</span>) : <span className="text-sm text-slate-400">Run analysis to see missed queries.</span>}</div>
                                                         </SectionCard>
                                                         <SectionCard title="Quick Wins for AI" icon="ph-lightning">
-                                                            <ul className="space-y-2">{(aeoRpt.quick_wins_for_ai || aeoRpt.recommendations || []).map((w,i) => <li key={i} className="text-sm text-emerald-600 flex gap-2"><i className="ph ph-check shrink-0"></i>{w}</li>)}</ul>
+                                                            <ul className="space-y-2">{asArray(aeoRpt.quick_wins_for_ai || aeoRpt.recommendations).map((w,i) => <li key={i} className="text-sm text-emerald-600 flex gap-2"><i className="ph ph-check shrink-0"></i>{w}</li>)}</ul>
                                                         </SectionCard>
                                                     </div>
                                                 </div>

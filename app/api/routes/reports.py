@@ -45,7 +45,10 @@ async def list_reports(
     # ── AnalysisReports ───────────────────────────────────────────────────────
     report_rows = await db.execute(
         select(AnalysisReport)
-        .where(AnalysisReport.tenant_id == tenant.id)
+        .where(
+            AnalysisReport.tenant_id == tenant.id,
+            AnalysisReport.user_id == db_user.id,
+        )
         .order_by(desc(AnalysisReport.created_at))
         .offset(offset)
         .limit(page_size)
@@ -54,7 +57,8 @@ async def list_reports(
 
     total_reports_row = await db.execute(
         select(func.count()).select_from(AnalysisReport).where(
-            AnalysisReport.tenant_id == tenant.id
+            AnalysisReport.tenant_id == tenant.id,
+            AnalysisReport.user_id == db_user.id,
         )
     )
     total_reports: int = total_reports_row.scalar_one()
@@ -62,7 +66,10 @@ async def list_reports(
     # ── Blueprints ────────────────────────────────────────────────────────────
     blueprint_rows = await db.execute(
         select(Blueprint)
-        .where(Blueprint.tenant_id == tenant.id)
+        .where(
+            Blueprint.tenant_id == tenant.id,
+            Blueprint.user_id == db_user.id,
+        )
         .order_by(desc(Blueprint.created_at))
         .offset(offset)
         .limit(page_size)
@@ -71,7 +78,8 @@ async def list_reports(
 
     total_blueprints_row = await db.execute(
         select(func.count()).select_from(Blueprint).where(
-            Blueprint.tenant_id == tenant.id
+            Blueprint.tenant_id == tenant.id,
+            Blueprint.user_id == db_user.id,
         )
     )
     total_blueprints: int = total_blueprints_row.scalar_one()
@@ -92,12 +100,14 @@ async def list_reports(
 async def get_analysis_report(
     report_id: UUID,
     db: AsyncSession = Depends(get_db),
+    db_user: User = Depends(get_db_user),
     tenant: Tenant = Depends(get_db_tenant),
 ) -> AnalyzePDPResponse:
     result = await db.execute(
         select(AnalysisReport).where(
             AnalysisReport.id == report_id,
             AnalysisReport.tenant_id == tenant.id,
+            AnalysisReport.user_id == db_user.id,
         )
     )
     report = result.scalar_one_or_none()
@@ -131,12 +141,14 @@ async def get_analysis_report(
 async def get_blueprint(
     blueprint_id: UUID,
     db: AsyncSession = Depends(get_db),
+    db_user: User = Depends(get_db_user),
     tenant: Tenant = Depends(get_db_tenant),
 ) -> AnalyzeBusinessResponse:
     result = await db.execute(
         select(Blueprint).where(
             Blueprint.id == blueprint_id,
             Blueprint.tenant_id == tenant.id,
+            Blueprint.user_id == db_user.id,
         )
     )
     bp = result.scalar_one_or_none()
