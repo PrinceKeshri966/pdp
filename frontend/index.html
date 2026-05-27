@@ -74,7 +74,12 @@
             userinfo_failed: 'Could not load your Google profile. Try again.',
             missing_code: 'Google did not return a login code. Try again.',
             access_denied: 'You cancelled Google sign-in.',
+            api_unreachable: 'Could not connect to the server API. On Vercel, ensure the Python API is deployed and env vars are set.',
         };
+
+        function isLocalDevHost() {
+            return /localhost|127\.0\.0\.1/.test(window.location.hostname);
+        }
 
         function getAuthErrorMessage(code) {
             return AUTH_ERROR_MESSAGES[code] || 'Sign-in failed. Please try again.';
@@ -474,9 +479,14 @@
                                 )}
 
                                 {authProvider === 'none' && (
-                                    <p className="text-sm text-center text-amber-700 bg-amber-50 p-3 rounded-lg">
-                                        Auth is not configured. Add Google OAuth credentials to <code className="text-xs">.env</code> and restart the server.
-                                    </p>
+                                    <div className="text-sm text-center text-amber-800 bg-amber-50 p-4 rounded-lg space-y-2">
+                                        <p className="font-semibold">Sign-in is not available yet</p>
+                                        <p className="text-xs text-amber-700">
+                                            {isLocalDevHost()
+                                                ? 'Add Google OAuth credentials to .env and restart the server.'
+                                                : 'Add GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, APP_BASE_URL, and GOOGLE_REDIRECT_URI in your Vercel project Environment Variables, then redeploy.'}
+                                        </p>
+                                    </div>
                                 )}
                             </div>
                         </div>
@@ -2993,41 +3003,53 @@
             }
 
             try {
-                const config = await fetch('/api/v1/config').then(r => r.json()).catch(() => ({}));
-                authProvider = config.auth_provider || 'none';
-                _authProvider = authProvider;
+                const resp = await fetch('/api/v1/config');
+                const config = resp.ok ? await resp.json() : null;
 
-                const token = getAuthToken();
+                if (!config) {
+                    needsSignIn = true;
+                    authProvider = 'none';
+                    authError = 'api_unreachable';
+                } else {
+                    authProvider = config.auth_provider || 'none';
+                    _authProvider = authProvider;
 
-                if (authProvider === 'google') {
-                    if (!token) {
-                        needsSignIn = true;
-                    } else {
-                        authUser = await loadGoogleAuthUser(token);
-                        if (!authUser) {
-                            sessionStorage.removeItem('auth_token');
-                            needsSignIn = true;
-                        }
-                    }
-                } else if (authProvider === 'clerk') {
-                    const pk = config.clerk_publishable_key || '';
-                    if (pk && window.Clerk) {
-                        _clerk = new window.Clerk(pk);
-                        await _clerk.load();
-                        if (!_clerk.user) {
+                    const token = getAuthToken();
+
+                    if (authProvider === 'google') {
+                        if (!token) {
                             needsSignIn = true;
                         } else {
-                            authUser = _clerk.user;
+                            authUser = await loadGoogleAuthUser(token);
+                            if (!authUser) {
+                                sessionStorage.removeItem('auth_token');
+                                needsSignIn = true;
+                            }
                         }
+                    } else if (authProvider === 'clerk') {
+                        const pk = config.clerk_publishable_key || '';
+                        if (pk && window.Clerk) {
+                            _clerk = new window.Clerk(pk);
+                            await _clerk.load();
+                            if (!_clerk.user) {
+                                needsSignIn = true;
+                            } else {
+                                authUser = _clerk.user;
+                            }
+                        } else {
+                            needsSignIn = true;
+                        }
+                    } else if (!config.auth_required && isLocalDevHost()) {
+                        authUser = { fullName: 'Dev User', firstName: 'Dev', primaryEmailAddress: { emailAddress: 'dev@localhost' } };
+                    } else {
+                        needsSignIn = true;
                     }
-                } else if (!config.auth_required) {
-                    authUser = { fullName: 'Dev User', firstName: 'Dev', primaryEmailAddress: { emailAddress: 'dev@localhost' } };
-                } else {
-                    needsSignIn = true;
                 }
             } catch (e) {
                 console.warn('Auth init failed:', e);
                 needsSignIn = true;
+                authProvider = 'none';
+                authError = 'api_unreachable';
             }
 
             ReactDOM.createRoot(document.getElementById('root')).render(
