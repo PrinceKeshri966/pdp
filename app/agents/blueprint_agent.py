@@ -18,7 +18,7 @@ import json
 import time
 
 from app.agents.claude_client import claude
-from app.agents.json_utils import safe_json_parse
+from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
 from app.agents.state import AgentState, state_dict
 from app.core.logging import get_logger
@@ -113,7 +113,11 @@ Generate the complete PDP blueprint now.
     raw = response.content[0].text.strip()
     duration_ms = int((time.monotonic() - t0) * 1000)
 
-    blueprint = safe_json_parse(raw)
+    blueprint, parse_err = safe_json_parse_report(raw, "blueprint_agent")
+    if parse_err:
+        state["errors"] = state.get("errors", []) + [parse_err]
+        state["status"] = "failed"
+        return state
 
     logger.info(
         "blueprint_agent.done",

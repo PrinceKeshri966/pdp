@@ -15,7 +15,7 @@ import json
 import time
 
 from app.agents.claude_client import claude
-from app.agents.json_utils import safe_json_parse
+from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
 from app.agents.state import AgentState
 from app.core.logging import get_logger
@@ -67,24 +67,27 @@ async def business_agent(state: AgentState) -> AgentState:
     logger.info("business_agent.start", model=_MODEL, chars=len(business_input))
     t0 = time.monotonic()
 
+    # Include any uploaded file context if present to improve understanding
+    uploaded_ctx = state.get("uploaded_context") or ""
+    user_content = (
+        (f"Uploaded context:\n\n{uploaded_ctx}\n\n") if uploaded_ctx else ""
+    ) + f"Here is the merchant's business brief:\n\n{business_input}"
+
     response = await claude.messages.create(
         model=_MODEL,
         max_tokens=4096,
         system=_SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"Here is the merchant's business brief:\n\n{business_input}"
-                ),
-            }
-        ],
+        messages=[{"role": "user", "content": user_content}],
     )
 
     raw = response.content[0].text.strip()
     duration_ms = int((time.monotonic() - t0) * 1000)
 
-    understanding = safe_json_parse(raw)
+    understanding, parse_err = safe_json_parse_report(raw, "business_agent")
+    if parse_err:
+        state["errors"] = state.get("errors", []) + [parse_err]
+        state["status"] = "failed"
+        return state
 
     logger.info(
         "business_agent.done",

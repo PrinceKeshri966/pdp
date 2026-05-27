@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AnalysisReportSummary(BaseModel):
@@ -16,16 +16,17 @@ class AnalysisReportSummary(BaseModel):
     source_url: str
     status: str
     seo_score: float | None
-    overall_score: float | None
+    overall_score: float | None = Field(None, alias="overall_health_score")
     created_at: datetime
     completed_at: datetime | None
 
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "populate_by_name": True}
 
 
 class BlueprintSummary(BaseModel):
     id: UUID
     title: str | None
+    business_input: str | None = None
     status: str
     version: int
     created_at: datetime

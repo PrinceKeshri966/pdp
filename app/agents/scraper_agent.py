@@ -5,9 +5,10 @@ ScraperAgent  (Mode 1 – Node 1)
 ────────────────────────────────
 Cloud-safe scrape chain (no Playwright required on Render):
 
-  1. Jina Reader (markdown, best for most URLs)
-  2. Direct HTTP fetch + HTML → text (works when Jina times out / blocks)
-  3. Playwright (optional — local dev only if browsers installed)
+  1. Firecrawl (full JS rendering, anti-bot bypass — if API key set)
+  2. Jina Reader (markdown, best for most URLs)
+  3. Direct HTTP fetch + HTML → text (works when Jina times out / blocks)
+  4. Playwright (optional — local dev only if browsers installed)
 
 Set SKIP_PLAYWRIGHT=true on Render (default in render.yaml).
 """
@@ -28,7 +29,8 @@ logger = get_logger(__name__)
 _settings = get_settings()
 
 _JINA_BASE = "https://r.jina.ai/"
-_JINA_THIN_THRESHOLD = 500
+_FIRECRAWL_BASE = "https://api.firecrawl.dev/v1/scrape"
+_JINA_THIN_THRESHOLD = 1500
 _MIN_USABLE_CHARS = 200
 _MAX_CONTENT_CHARS = 80_000
 _HTTP_TIMEOUT = 45.0
@@ -59,6 +61,18 @@ def _html_to_text(html: str) -> str:
     text = unescape(text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:_MAX_CONTENT_CHARS]
+
+
+async def _fetch_with_firecrawl(url: str) -> str:
+    """Firecrawl — full JS rendering, anti-bot bypass, ~96% web coverage."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            _FIRECRAWL_BASE,
+            headers={"Authorization": f"Bearer {_settings.firecrawl_api_key}"},
+            json={"url": url, "formats": ["markdown"], "onlyMainContent": True},
+        )
+        resp.raise_for_status()
+        return (resp.json().get("data") or {}).get("markdown", "")
 
 
 async def _fetch_with_jina(url: str) -> str:
@@ -151,14 +165,23 @@ async def scraper_agent(state: AgentState) -> AgentState:
     content = ""
     method = "none"
 
-    # 1 — Jina Reader
-    text, err = await _try_fetch("jina", _fetch_with_jina, url)
-    if err:
-        attempt_errors.append(err)
-    if text:
-        content, method = text, "jina"
+    # 1 — Firecrawl (tier 1 if API key configured)
+    if _settings.firecrawl_api_key:
+        text, err = await _try_fetch("firecrawl", _fetch_with_firecrawl, url)
+        if err:
+            attempt_errors.append(err)
+        if text:
+            content, method = text, "firecrawl"
 
-    # 2 — Direct HTTP (upgrade if Jina thin/missing)
+    # 2 — Jina Reader
+    if len(content) < _JINA_THIN_THRESHOLD:
+        text, err = await _try_fetch("jina", _fetch_with_jina, url)
+        if err:
+            attempt_errors.append(err)
+        if text and len(text) > len(content):
+            content, method = text, "jina"
+
+    # 3 — Direct HTTP (upgrade if Jina thin/missing)
     if len(content) < _JINA_THIN_THRESHOLD:
         text, err = await _try_fetch("httpx", _fetch_with_httpx, url)
         if err:
@@ -166,7 +189,7 @@ async def scraper_agent(state: AgentState) -> AgentState:
         if text and len(text) > len(content):
             content, method = text, "httpx"
 
-    # 3 — Playwright (local dev only)
+    # 4 — Playwright (local dev only)
     if _playwright_enabled() and len(content) < _JINA_THIN_THRESHOLD:
         text, err = await _try_fetch("playwright", _fetch_with_playwright, url)
         if err:
@@ -179,7 +202,7 @@ async def scraper_agent(state: AgentState) -> AgentState:
     if len(content) < _MIN_USABLE_CHARS:
         summary = (
             "scraper_agent: could not fetch enough page content. "
-            f"Tried jina, httpx"
+            f"Tried {'firecrawl, ' if _settings.firecrawl_api_key else ''}jina, httpx"
             + (", playwright" if _playwright_enabled() else "")
             + f". Details: {' | '.join(attempt_errors[:3])}"
         )

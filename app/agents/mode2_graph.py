@@ -19,6 +19,7 @@ from app.agents.state import AgentState
 from app.agents.business_agent import business_agent
 from app.agents.pdp_researcher_agent import pdp_researcher_agent
 from app.agents.blueprint_agent import blueprint_agent
+from app.agents.pipeline_stream import MODE2_PIPELINE, stream_graph_progress
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -65,6 +66,40 @@ def build_mode2_graph() -> StateGraph:
 _mode2_graph = build_mode2_graph().compile()
 
 
+def build_mode2_initial_state(
+    business_input: str, tenant_id: str, user_id: str
+) -> AgentState:
+    return {
+        "business_input": business_input,
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "agent_reports": [],
+        "errors": [],
+        "status": "running",
+        "url": None,
+        "markdown_content": None,
+        "json_structured_data": None,
+        "seo_report": None,
+        "autofix_report": None,
+        "business_understanding": None,
+        "pdp_research": None,
+        "final_blueprint": None,
+    }
+
+
+async def stream_mode2(business_input: str, tenant_id: str, user_id: str):
+    initial_state = build_mode2_initial_state(business_input, tenant_id, user_id)
+    logger.info("mode2.start", chars=len(business_input), tenant_id=tenant_id)
+    async for event, state in stream_graph_progress(_mode2_graph, initial_state, MODE2_PIPELINE):
+        if event["type"] == "done":
+            logger.info(
+                "mode2.done",
+                status=state.get("status"),
+                agents_ran=len(state.get("agent_reports", [])),
+            )
+        yield event, state
+
+
 async def run_mode2(
     business_input: str, tenant_id: str, user_id: str
 ) -> AgentState:
@@ -82,23 +117,7 @@ async def run_mode2(
     AgentState
         Final state with `final_blueprint` populated.
     """
-    initial_state: AgentState = {
-        "business_input": business_input,
-        "tenant_id": tenant_id,
-        "user_id": user_id,
-        "agent_reports": [],
-        "errors": [],
-        "status": "running",
-        # Mode 1 fields not used in Mode 2
-        "url": None,
-        "markdown_content": None,
-        "json_structured_data": None,
-        "seo_report": None,
-        "autofix_report": None,
-        "business_understanding": None,
-        "pdp_research": None,
-        "final_blueprint": None,
-    }
+    initial_state = build_mode2_initial_state(business_input, tenant_id, user_id)
 
     logger.info("mode2.start", chars=len(business_input), tenant_id=tenant_id)
     final_state: AgentState = await _mode2_graph.ainvoke(initial_state)  # type: ignore[assignment]

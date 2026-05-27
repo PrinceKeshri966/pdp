@@ -87,7 +87,6 @@ async def psychology_agent(state: AgentState) -> AgentState:
     """Analyze conversion psychology and suggest behavioral triggers."""
     markdown = state.get("markdown_content", "")
     structured = state_dict(state, "json_structured_data")
-    ux = state_dict(state, "ux_report")
 
     if not markdown:
         return {"errors": ["psychology_agent: no markdown_content"]}
@@ -101,9 +100,6 @@ Analyze this product page for conversion psychology:
 Product Data:
 {structured}
 
-UX Analysis (if available):
-{ux}
-
 Page Content (first 5000 chars):
 {markdown[:5000]}
 
@@ -113,7 +109,7 @@ specific implementations with expected conversion lift.
 
     response = await claude.messages.create(
         model=_MODEL,
-        max_tokens=2048,
+        max_tokens=4096,
         system=_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )

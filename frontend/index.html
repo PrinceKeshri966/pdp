@@ -1,6 +1,27 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <!--
+    Integration instructions for Chat + File Upload (for Cursor):
+
+    "I have the backend logic working (I get a valid JSON response). Now I need to implement the Chat and File Upload features and fix the view rendering. Please update my files as follows:
+
+    1. Backend (analyze.py):
+
+    Create a new endpoint POST /api/v1/chat/upload. It must accept UploadFile. Use python-docx, pypdf, and python-pptx to extract text.
+
+    Ensure this endpoint returns a JSON: {"text": "extracted content..."}.
+
+    2. Frontend (index.html):
+
+    Inside view === 'MODE2_INPUT', replace the static form with the Chat UI I previously shared (or a refined version).
+
+    File Upload Integration: Add a file input (hidden) and a paperclip button. When a file is uploaded, use fetch to send it to /api/v1/chat/upload. Take the returned text and append it as a 'system' message into the chatHistory state.
+
+    Chat Logic: Ensure handleSendMessage sends the message to the backend.
+
+    Display Logic: Ensure that when the AI returns the blueprint JSON (the one I shared), setView('SELECT_LAYOUT') is triggered and the UI displays the blueprint data fetched from the API response."
+    -->
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OptiPDP - AI Commerce OS</title>
@@ -22,9 +43,10 @@
 </head>
 <body class="bg-slate-50 text-slate-800 font-sans antialiased h-screen flex overflow-hidden">
     <div id="root" class="w-full h-full flex items-center justify-center">
-        <div class="text-center text-slate-400">
-            <div class="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mx-auto mb-4"></div>
-            <p class="text-sm font-medium">Initializing OptiPDP...</p>
+        <div class="text-center text-slate-400 p-6">
+            <div class="radar-spinner mx-auto mb-4 flex items-center justify-center"><i class="ph ph-rocket-launch text-3xl text-indigo-500 animate-pulse"></i></div>
+            <h3 class="text-lg font-bold text-slate-800 mb-1">OptiPDP</h3>
+            <p class="text-sm text-slate-500">Loading AI agents — preparing your optimization workspace…</p>
         </div>
     </div>
 
@@ -97,7 +119,9 @@
         }
 
         async function apiFetch(path, options = {}) {
-            const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+            // Allow FormData body to be sent without forcing JSON content-type
+            const isForm = options && options.body && (options.body instanceof FormData);
+            const headers = isForm ? { ...(options.headers || {}) } : { 'Content-Type': 'application/json', ...(options.headers || {}) };
             const stored = getAuthToken();
             if (stored) {
                 headers['Authorization'] = `Bearer ${stored}`;
@@ -107,13 +131,245 @@
                     if (token) headers['Authorization'] = `Bearer ${token}`;
                 } catch (_) {}
             }
-            const resp = await fetch(path, { ...options, headers });
+            const fetchOptions = { ...options, headers };
+            // If body is an object and not already a string or FormData, stringify it for JSON
+            if (!isForm && fetchOptions.body && typeof fetchOptions.body !== 'string') {
+                fetchOptions.body = JSON.stringify(fetchOptions.body);
+            }
+            const resp = await fetch(path, fetchOptions);
             if (!resp.ok) {
                 let detail = `HTTP ${resp.status}`;
                 try { detail = (await resp.json()).detail || detail; } catch (_) {}
                 throw new Error(detail);
             }
             return resp.json();
+        }
+
+        async function apiStreamAnalyze(path, body, onProgress) {
+            const headers = { 'Content-Type': 'application/json', Accept: 'text/event-stream' };
+            const stored = getAuthToken();
+            if (stored) {
+                headers['Authorization'] = `Bearer ${stored}`;
+            } else if (_clerk?.session) {
+                try {
+                    const token = await _clerk.session.getToken();
+                    if (token) headers['Authorization'] = `Bearer ${token}`;
+                } catch (_) {}
+            }
+            const resp = await fetch(path, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(body),
+                credentials: 'include',
+            });
+            if (!resp.ok) {
+                let detail = `HTTP ${resp.status}`;
+                try { detail = (await resp.json()).detail || detail; } catch (_) {}
+                throw new Error(detail);
+            }
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const parts = buffer.split('\n\n');
+                buffer = parts.pop() || '';
+                for (const part of parts) {
+                    const line = part.split('\n').find(l => l.startsWith('data: '));
+                    if (!line) continue;
+                    const data = JSON.parse(line.slice(6));
+                    if (data.type === 'progress' && onProgress) onProgress(data);
+                    if (data.type === 'error') throw new Error(data.detail || 'Analysis failed');
+                    if (data.type === 'done') return data.result;
+                }
+            }
+            throw new Error('Stream ended before analysis completed');
+        }
+
+        function buildMode2BusinessInput(chatHistory) {
+            const userText = chatHistory.filter(m => m.role === 'user').map(m => m.text).join('\n\n');
+            const systemCtx = chatHistory.filter(m => m.role === 'system').map(m => m.text).join('\n\n');
+            if (!userText.trim()) return '';
+            return systemCtx.trim()
+                ? `${userText}\n\nAdditional context:\n${systemCtx}`
+                : userText;
+        }
+
+        async function runMode2FromChat(chatHistory, setters) {
+            const { setView, setAnalyzingText, setAnalyzingProgress, setMode2Result, showToast, setViewOnFail } = setters;
+            const business_input = buildMode2BusinessInput(chatHistory);
+            if (!business_input.trim()) {
+                showToast('Please describe your business in the chat first.');
+                return;
+            }
+            setView('RESEARCHING');
+            setAnalyzingProgress({ completed: 0, total: 3 });
+            setAnalyzingText('Business Agent: Parsing your market...');
+            try {
+                const result = await apiStreamAnalyze(
+                    '/api/v1/analyze/business/stream',
+                    { business_input },
+                    (evt) => {
+                        if (evt.label) setAnalyzingText(evt.label);
+                        if (evt.completed_count != null) {
+                            setAnalyzingProgress({ completed: evt.completed_count, total: evt.total_count || 3 });
+                        }
+                    }
+                );
+                setMode2Result(result);
+                setView('SELECT_LAYOUT');
+                if (setters.onComplete) setters.onComplete();
+            } catch (err) {
+                showToast(`Research failed: ${err.message}`);
+                setView(setViewOnFail || 'MODE2_INPUT');
+            }
+        }
+
+        function getCategoryImages(understanding, chatHistory) {
+            return buildPromptImages(understanding, chatHistory);
+        }
+
+        function buildImagePrompt(understanding, chatHistory) {
+            const parts = [
+                understanding?.product_name,
+                understanding?.sub_category,
+                understanding?.product_category,
+                ...(understanding?.key_features || []).slice(0, 2),
+                ...(chatHistory || []).filter(m => m.role === 'user').map(m => m.text),
+            ].filter(Boolean).join(' ');
+            const text = parts.toLowerCase();
+            if (/saree|ethnic|banarasi|silk|lehenga|kurta|indian/.test(text)) {
+                return 'ethnic indian saree product photography studio lighting ecommerce';
+            }
+            if (/fitness|gym|fitpass|workout/.test(text)) {
+                return 'fitness gym membership product photography professional';
+            }
+            if (/skincare|beauty|cosmetic|mamaearth/.test(text)) {
+                return 'natural skincare beauty product photography clean white background';
+            }
+            if (/jeans|denim/.test(text)) {
+                return 'denim jeans fashion product photography model';
+            }
+            const fallback = understanding?.product_category || understanding?.product_name || 'ecommerce product';
+            return `${fallback} professional product photography ecommerce white background`;
+        }
+
+        function buildPromptImages(understanding, chatHistory) {
+            const prompt = encodeURIComponent(buildImagePrompt(understanding, chatHistory));
+            const angles = ['front view', 'side angle', 'detail closeup', 'lifestyle model wearing'];
+            return angles.map((angle, i) =>
+                `https://image.pollinations.ai/prompt/${prompt}%20${encodeURIComponent(angle)}?width=600&height=800&seed=${100 + i}&nologo=true`
+            );
+        }
+
+        function getCompetitorSites(understanding) {
+            const text = [
+                understanding?.product_category,
+                understanding?.sub_category,
+                ...(understanding?.competitors || []),
+            ].join(' ').toLowerCase();
+            const pick = (entries) => entries.slice(0, 2);
+            if (/saree|ethnic|banarasi|silk|lehenga|indian/.test(text)) {
+                return pick([
+                    { name: 'Fabindia', url: 'https://www.fabindia.com', style: 'Heritage craft, rich imagery' },
+                    { name: 'Manyavar', url: 'https://www.manyavar.com', style: 'Trust-first, occasion wear' },
+                ]);
+            }
+            if (/skincare|beauty|cosmetic/.test(text)) {
+                return pick([
+                    { name: 'Mamaearth', url: 'https://mamaearth.in', style: 'Clean, ingredient-led PDP' },
+                    { name: 'Nykaa', url: 'https://www.nykaa.com', style: 'Reviews & ratings heavy' },
+                ]);
+            }
+            if (/fitness|gym/.test(text)) {
+                return pick([
+                    { name: 'Cult.fit', url: 'https://www.cult.fit', style: 'Bold CTA, minimal copy' },
+                    { name: 'Fitpass', url: 'https://fitpass.co.in', style: 'Plan comparison layout' },
+                ]);
+            }
+            const names = (understanding?.competitors || []).slice(0, 2);
+            if (names.length >= 2) {
+                return names.map((n, i) => ({
+                    name: n,
+                    url: `https://www.google.com/search?q=${encodeURIComponent(n + ' official store')}`,
+                    style: i === 0 ? 'Minimalist layout' : 'Trust-first layout',
+                    isSearch: true,
+                }));
+            }
+            return pick([
+                { name: 'Competitor A', url: 'https://www.amazon.in', style: 'Image-heavy, low text' },
+                { name: 'Competitor B', url: 'https://www.flipkart.com', style: 'Reviews & details' },
+            ]);
+        }
+
+        function sitePreviewUrl(url) {
+            if (!url || url.includes('google.com/search')) return null;
+            return `https://image.thum.io/get/width/480/crop/480/noanimate/${url}`;
+        }
+
+        function extractDomain(url) {
+            try {
+                return new URL(url.startsWith('http') ? url : `https://${url}`).hostname.replace(/^www\./, '');
+            } catch {
+                return url || 'website';
+            }
+        }
+
+        function faviconUrl(url) {
+            const domain = extractDomain(url);
+            return `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
+        }
+
+        function formatRelativeTime(iso) {
+            if (!iso) return '';
+            const diff = Date.now() - new Date(iso).getTime();
+            const mins = Math.floor(diff / 60000);
+            if (mins < 1) return 'Just now';
+            if (mins < 60) return `${mins} min ago`;
+            const hrs = Math.floor(mins / 60);
+            if (hrs < 24) return `${hrs} hour${hrs > 1 ? 's' : ''} ago`;
+            const days = Math.floor(hrs / 24);
+            if (days < 7) return `${days} day${days > 1 ? 's' : ''} ago`;
+            return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+        }
+
+        function isLikelyHomepageUrl(url) {
+            try {
+                const u = new URL(url.startsWith('http') ? url : `https://${url}`);
+                const path = u.pathname.replace(/\/+$/, '') || '/';
+                if (path === '/') return true;
+                const segments = path.split('/').filter(Boolean);
+                return segments.length === 1 && !/product|pdp|item|sku|dp\//i.test(path);
+            } catch {
+                return false;
+            }
+        }
+
+        function healthScoreDisplay(report) {
+            const raw = report?.overall_health_score ?? report?.overall_score ?? report?.seo_score;
+            if (raw == null) return null;
+            return Math.round(Number(raw) * 10);
+        }
+
+        function healthScoreColor(score) {
+            if (score == null) return 'text-slate-400 bg-slate-100';
+            if (score < 40) return 'text-red-700 bg-red-50 border-red-100';
+            if (score < 70) return 'text-amber-700 bg-amber-50 border-amber-100';
+            return 'text-emerald-700 bg-emerald-50 border-emerald-100';
+        }
+
+        function statusBadge(status) {
+            const s = (status || 'pending').toLowerCase();
+            if (s === 'completed') return { label: 'Completed', cls: 'bg-emerald-100 text-emerald-700' };
+            if (s === 'running') return { label: 'In progress', cls: 'bg-blue-100 text-blue-700' };
+            if (s === 'failed') return { label: 'Failed', cls: 'bg-red-100 text-red-700' };
+            return { label: status, cls: 'bg-slate-100 text-slate-600' };
+        }
+
+        function findBlueprintSection(sections, pattern) {
+            return (sections || []).find(s => pattern.test(s.section_name || ''));
         }
 
         const CLERK_AUTH_APPEARANCE = {
@@ -232,21 +488,33 @@
             //        VISUALIZER_MODE2 | SUCCESS
             const [view, setView] = useState('HOME');
             const [analyzingText, setAnalyzingText] = useState('');
+            const [analyzingProgress, setAnalyzingProgress] = useState({ completed: 0, total: 10 });
 
             // Mode 1 state
             const [urlInput, setUrlInput] = useState('');
             const [mode1Result, setMode1Result] = useState(null);
-            const [reportTab, setReportTab] = useState('SEO');
+            const [reportTab, setReportTab] = useState('WEBSITE');
+            const [historyItems, setHistoryItems] = useState({ analysis_reports: [], blueprints: [] });
+            const [historyLoading, setHistoryLoading] = useState(false);
+            const [historyFilter, setHistoryFilter] = useState('all');
+            const [historySearch, setHistorySearch] = useState('');
+            const [historyOpening, setHistoryOpening] = useState(null);
             const [previewToggle, setPreviewToggle] = useState('OPTIMIZED');
 
             // Mode 2 state
             const [businessData, setBusinessData] = useState({
-                product: 'Premium Jeans', audience: '18-30 GenZ',
-                region: 'Middle East', material: '100% Cotton / Denim'
+                product: '', audience: '', region: '', material: ''
             });
             const [mode2Result, setMode2Result] = useState(null);
             const [chatInput, setChatInput] = useState('');
             const [pageVersion, setPageVersion] = useState(1);
+            const [selectedSize, setSelectedSize] = useState('M');
+            const [selectedImageIdx, setSelectedImageIdx] = useState(0);
+            const [openAccordion, setOpenAccordion] = useState(null);
+            const [pageEdits, setPageEdits] = useState({});
+            const [navStack, setNavStack] = useState(['HOME']);
+            const [navIdx, setNavIdx] = useState(0);
+            const skipNavUpdate = useRef(false);
             const [isUpdating, setIsUpdating] = useState(false);
             const [expandedDevItem, setExpandedDevItem] = useState(null);
             const chatEndRef = useRef(null);
@@ -266,66 +534,151 @@
                 apiFetch('/api/v1/glossary/checks')
                     .then(setCheckGlossary)
                     .catch(e => console.warn('Glossary load failed:', e.message));
+                apiFetch('/api/v1/reports')
+                    .then(setHistoryItems)
+                    .catch(() => {});
             }, []);
+
+            const loadHistory = async () => {
+                setHistoryLoading(true);
+                try {
+                    const data = await apiFetch('/api/v1/reports');
+                    setHistoryItems(data);
+                } catch (e) {
+                    showToast(`History load failed: ${e.message}`);
+                } finally {
+                    setHistoryLoading(false);
+                }
+            };
+
+            useEffect(() => {
+                if (view === 'HISTORY') loadHistory();
+            }, [view]);
+
+            const openHistoryReport = async (id) => {
+                setHistoryOpening(id);
+                try {
+                    const data = await apiFetch(`/api/v1/reports/analysis/${id}`);
+                    setMode1Result(data);
+                    setUrlInput(data.source_url || '');
+                    setReportTab('WEBSITE');
+                    setView('REPORT_MODE1');
+                } catch (e) {
+                    showToast(`Could not load report: ${e.message}`);
+                } finally {
+                    setHistoryOpening(null);
+                }
+            };
+
+            const openHistoryBlueprint = async (id) => {
+                setHistoryOpening(id);
+                try {
+                    const data = await apiFetch(`/api/v1/reports/blueprint/${id}`);
+                    setMode2Result(data);
+                    if (data.business_input) {
+                        setChatHistory([
+                            { role: 'user', text: data.business_input },
+                            { role: 'ai', text: 'I have generated the initial high-converting layout based on your business brief. How would you like to refine it?' },
+                        ]);
+                    }
+                    setView('SELECT_LAYOUT');
+                } catch (e) {
+                    showToast(`Could not load blueprint: ${e.message}`);
+                } finally {
+                    setHistoryOpening(null);
+                }
+            };
 
             useEffect(() => {
                 if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
             }, [chatHistory]);
 
+            useEffect(() => {
+                if (skipNavUpdate.current) {
+                    skipNavUpdate.current = false;
+                    return;
+                }
+                setNavStack(prev => {
+                    if (prev[navIdx] === view) return prev;
+                    const next = [...prev.slice(0, navIdx + 1), view];
+                    setNavIdx(next.length - 1);
+                    return next;
+                });
+            }, [view]);
+
+            const goNavBack = () => {
+                if (navIdx <= 0) return;
+                skipNavUpdate.current = true;
+                const ni = navIdx - 1;
+                setNavIdx(ni);
+                setView(navStack[ni]);
+            };
+            const goNavForward = () => {
+                if (navIdx >= navStack.length - 1) return;
+                skipNavUpdate.current = true;
+                const ni = navIdx + 1;
+                setNavIdx(ni);
+                setView(navStack[ni]);
+            };
+
+            const isMode2View = ['MODE2_INPUT', 'RESEARCHING', 'SELECT_LAYOUT', 'VISUALIZER_MODE2'].includes(view);
+            const isHomeNav = ['HOME', 'MODE1_INPUT', 'MODE2_INPUT', 'ANALYZING', 'RESEARCHING'].includes(view);
+            const agentBadgeCount = isMode2View ? 3 : 10;
+
             // ── Mode 1: call POST /api/v1/analyze/pdp ────────────────────────────
             const runMode1Analysis = async () => {
                 if (!urlInput.trim()) return;
+                if (isLikelyHomepageUrl(urlInput)) {
+                    showToast('Tip: Use a product page URL (with /products/...) for best PDP audit results.');
+                }
                 setView('ANALYZING');
-                const phases = [
-                    'Scraper Agent: Fetching page...',
-                    'Extractor Agent: Parsing product data...',
-                    'SEO Agent: Auditing search signals...',
-                    'AEO Agent: Checking AI visibility...',
-                    'UX Agent: Evaluating conversion...',
-                    'Competitor Agent: Benchmarking market...',
-                    'Psychology Agent: Analyzing triggers...',
-                    'Prioritization Agent: Building action plan...',
-                    'AutoFix Agent: Generating fixes...',
-                    'Content Agent: Writing optimized copy...',
-                ];
-                let i = 0;
-                setAnalyzingText(phases[0]);
-                const timer = setInterval(() => { i = (i + 1) % phases.length; setAnalyzingText(phases[i]); }, 2500);
+                setAnalyzingProgress({ completed: 0, total: 10 });
+                setAnalyzingText('Scraper Agent: Fetching page...');
                 try {
-                    const result = await apiFetch('/api/v1/analyze/pdp', {
-                        method: 'POST', body: JSON.stringify({ url: urlInput })
-                    });
-                    clearInterval(timer);
+                    const result = await apiStreamAnalyze(
+                        '/api/v1/analyze/pdp/stream',
+                        { url: urlInput },
+                        (evt) => {
+                            if (evt.label) setAnalyzingText(evt.label);
+                            if (evt.completed_count != null) {
+                                setAnalyzingProgress({ completed: evt.completed_count, total: evt.total_count || 10 });
+                            }
+                        }
+                    );
                     setMode1Result(result);
+                    setReportTab('WEBSITE');
                     setView('REPORT_MODE1');
+                    loadHistory();
                 } catch (err) {
-                    clearInterval(timer);
                     showToast(`Analysis failed: ${err.message}`);
                     setView('MODE1_INPUT');
                 }
             };
 
-            // ── Mode 2: call POST /api/v1/analyze/business ───────────────────────
+            // ── Mode 2: legacy form flow (if used) ───────────────────────────────
             const runMode2Analysis = async () => {
-                setView('RESEARCHING');
                 const business_input = `Product: ${businessData.product}\nTarget Audience: ${businessData.audience}\nTarget Region: ${businessData.region}\nMaterial / USP: ${businessData.material}`;
-                const phases = [
-                    'Business Agent: Parsing Market...',
-                    'PDP Researcher Agent: Benchmarking Competitors...',
-                    'Blueprint Agent: Designing Layout...'
-                ];
-                let i = 0;
-                setAnalyzingText(phases[0]);
-                const timer = setInterval(() => { i = (i + 1) % phases.length; setAnalyzingText(phases[i]); }, 2500);
+                if (!businessData.product.trim()) {
+                    showToast('Please fill in your business details.');
+                    return;
+                }
+                setView('RESEARCHING');
+                setAnalyzingProgress({ completed: 0, total: 3 });
+                setAnalyzingText('Business Agent: Parsing your market...');
                 try {
-                    const result = await apiFetch('/api/v1/analyze/business', {
-                        method: 'POST', body: JSON.stringify({ business_input })
-                    });
-                    clearInterval(timer);
+                    const result = await apiStreamAnalyze(
+                        '/api/v1/analyze/business/stream',
+                        { business_input },
+                        (evt) => {
+                            if (evt.label) setAnalyzingText(evt.label);
+                            if (evt.completed_count != null) {
+                                setAnalyzingProgress({ completed: evt.completed_count, total: evt.total_count || 3 });
+                            }
+                        }
+                    );
                     setMode2Result(result);
                     setView('SELECT_LAYOUT');
                 } catch (err) {
-                    clearInterval(timer);
                     showToast(`Research failed: ${err.message}`);
                     setView('MODE2_INPUT');
                 }
@@ -334,48 +687,224 @@
             // ── Copilot chat (mock — no refinement endpoint yet) ─────────────────
             const handleRefineDesign = () => {
                 if (!chatInput.trim()) return;
-                setChatHistory(h => [...h, { role: 'user', text: chatInput }]);
+                const userText = chatInput.trim();
+                setChatHistory(h => [...h, { role: 'user', text: userText }]);
                 setChatInput('');
                 setIsUpdating(true);
                 setTimeout(() => {
+                    const t = userText.toLowerCase();
+                    let reply = 'Updated the page preview with your feedback.';
+                    if (/green|blue|red|maroon|gold|purple/.test(t) && /color|colour|saree|product/.test(t)) {
+                        const color = t.match(/green|blue|red|maroon|gold|purple/)?.[0] || 'green';
+                        setPageEdits(e => ({ ...e, accentColor: color }));
+                        reply = `Done — updated the product accent to ${color}. Check the preview on the left.`;
+                    } else if (/review|rating|star/.test(t)) {
+                        setPageEdits(e => ({
+                            ...e,
+                            reviewCount: (e.reviewCount || 128) + 42,
+                            rating: 4.9,
+                            reviewSnippet: userText.includes(':') ? userText.split(':').slice(1).join(':').trim() : 'Beautiful quality and fast delivery!',
+                        }));
+                        reply = 'Added customer reviews to the product page preview.';
+                    } else if (/faq|question/.test(t)) {
+                        setPageEdits(e => ({
+                            ...e,
+                            extraFaq: { q: userText.replace(/^add\s+/i, ''), a: 'Yes — this product is crafted for your needs with premium quality and easy returns.' },
+                        }));
+                        reply = 'Added a new FAQ block based on your request.';
+                    } else if (/price|discount|offer/.test(t)) {
+                        setPageEdits(e => ({ ...e, showDiscount: true, priceNote: userText }));
+                        reply = 'Updated pricing display on the preview.';
+                    } else if (/sustainable|eco|organic/.test(t)) {
+                        setPageEdits(e => ({ ...e, sustainabilityNote: userText }));
+                        reply = 'Added a sustainability highlight to the page.';
+                    } else {
+                        setPageEdits(e => ({ ...e, customNote: userText }));
+                        reply = `Applied your change: "${userText.slice(0, 80)}${userText.length > 80 ? '…' : ''}"`;
+                    }
                     setPageVersion(v => v + 1);
-                    setChatHistory(h => [...h, { role: 'ai', text: 'Updated! I have applied your feedback to the generated layout.' }]);
+                    setChatHistory(h => [...h, { role: 'ai', text: reply }]);
                     setIsUpdating(false);
-                }, 1500);
+                }, 600);
+            };
+
+            const handleSendMessage = async () => {
+                if (!chatInput.trim()) return;
+                const userText = chatInput.trim();
+                setChatHistory(h => [...h, { role: 'user', text: userText }]);
+                setChatInput('');
+                setIsUpdating(true);
+                try {
+                    // Send current chat + new message to backend chat endpoint
+                    const messages = (chatHistory || []).map(m => ({ role: m.role, text: m.text }));
+                    messages.push({ role: 'user', text: userText });
+                    const resp = await apiFetch('/api/v1/chat/message', { method: 'POST', body: { messages } });
+                    // Accept either { messages: [...] } or { reply: '...' }
+                    if (Array.isArray(resp.messages)) {
+                        setChatHistory(h => [...h, ...resp.messages.map(m => ({ role: m.role || 'ai', text: m.text || m }))]);
+                    } else if (resp.reply) {
+                        setChatHistory(h => [...h, { role: 'ai', text: resp.reply }]);
+                    } else {
+                        // Fallback friendly response
+                        setChatHistory(h => [...h, { role: 'ai', text: 'Thanks — I have noted that. Click Generate Blueprint when you are ready.' }]);
+                    }
+                } catch (err) {
+                    setChatHistory(h => [...h, { role: 'ai', text: `Sorry, I could not process that message: ${err.message}` }]);
+                } finally {
+                    setIsUpdating(false);
+                }
+            };
+
+            // Upload helper: sends FormData via apiFetch (apiFetch handles FormData)
+            const uploadFile = async (file) => {
+                if (!file) return;
+                showToast('Uploading file...');
+                const fd = new FormData();
+                fd.append('file', file);
+                try {
+                    const resp = await apiFetch('/api/v1/chat/upload', { method: 'POST', body: fd });
+                    setChatHistory(h => [...h, { role: 'system', text: resp.text || 'No text extracted from file.' }]);
+                    showToast('File parsed and added to chat context');
+                } catch (err) {
+                    showToast(`Upload failed: ${err.message}`);
+                }
             };
 
             // ── Derive display values from real API responses ─────────────────────
             const seoRpt    = mode1Result?.seo_report    || {};
             const autofixRpt = mode1Result?.autofix_report || {};
+            const contentRpt = mode1Result?.generated_content || {};
 
-            const seoScore = seoRpt.overall_seo_score != null ? Math.round(seoRpt.overall_seo_score) : 65;
-            const aiVisScore = (seoRpt.schema_markup && seoRpt.keyword_density)
-                ? Math.round(((seoRpt.schema_markup.score || 4) + (seoRpt.keyword_density.score || 5)) * 5)
-                : 42;
-            const uxScore = (seoRpt.headings_structure && seoRpt.image_alt_tags)
-                ? Math.round(((seoRpt.headings_structure.score || 7) + (seoRpt.image_alt_tags.score || 8)) * 5)
-                : 78;
-            const predictedBoost = autofixRpt.estimated_score_improvement != null
-                ? `+${Math.round(autofixRpt.estimated_score_improvement)} Pts`
-                : '+33 Pts';
+            const mode1ProductData = mode1Result?.json_structured_data
+                || (mode1Result?.agent_reports || []).find(r => r.agent === 'extractor_agent')?.output
+                || {};
+            const buildProductContext = (pd, result, url) => {
+                const categories = pd.categories || [];
+                const category = categories[categories.length - 1] || categories[0] || 'product';
+                const productName = pd.product_name || 'your product';
+                const brand = pd.brand || pd.seller_name || 'your brand';
+                const breadcrumb = (pd.breadcrumb || []).length ? pd.breadcrumb.join(' › ') : `Home › ${category}`;
+                const primaryKeyword = (productName.split(/[\|–—-]/)[0] || category).trim();
+                const aeoRpt = result?.aeo_report || {};
+                const sampleQuery = (aeoRpt.top_ai_queries_missed || [])[0]
+                    || `best ${category} to buy`;
+                const sampleFaq = (result?.generated_content?.faqs || [])[0]?.question
+                    || `What makes ${productName} a good choice?`;
+                return {
+                    productName, brand, category, breadcrumb, primaryKeyword,
+                    sampleQuery, sampleFaq,
+                    url: result?.source_url || url || '',
+                    price: pd.price || '',
+                    imageUrl: (pd.image_urls || [])[0] || null,
+                };
+            };
+            const mode1ProductCtx = buildProductContext(mode1ProductData, mode1Result, urlInput);
+
+            const formatProductPrice = (pd) => {
+                if (pd?.price) {
+                    const sym = pd.currency === 'INR' ? '₹' : (pd.currency ? `${pd.currency} ` : '');
+                    return `${sym}${pd.price}`;
+                }
+                if (pd?.above_fold_cta) return pd.above_fold_cta;
+                return 'See website for pricing';
+            };
+
+            const personalizeGlossaryText = (text, ctx) => {
+                if (!text || !ctx?.productName) return text;
+                return text
+                    .replace(/\{product_name\}/gi, ctx.productName)
+                    .replace(/\{brand\}/gi, ctx.brand)
+                    .replace(/\{category\}/gi, ctx.category)
+                    .replace(/Killer Jeans/gi, ctx.brand)
+                    .replace(/Men's Slim Fit Stretch Jeans — Dark Blue/gi, ctx.productName)
+                    .replace(/Men's Slim Fit Blue Denim/gi, ctx.productName)
+                    .replace(/Men's Slim Fit Jeans — Fabric & Fit/gi, `${ctx.productName} — Details & Features`)
+                    .replace(/Shop premium jeans today — Free shipping on orders above ₹999\./gi,
+                        `Shop ${ctx.productName} today${ctx.price ? ` — from ${ctx.price}` : ''}.`)
+                    .replace(/men's jeans/gi, ctx.primaryKeyword)
+                    .replace(/'jeans', 'denim'/gi, `'${ctx.primaryKeyword}'`)
+                    .replace(/Will these jeans shrink after wash\?/gi, ctx.sampleFaq)
+                    .replace(/Home > Men > Jeans/gi, ctx.breadcrumb)
+                    .replace(/best jeans under ₹2000/gi, ctx.sampleQuery);
+            };
+
+            const getAgentFixForCheck = (checkId, result, ctx) => {
+                if (!result) return null;
+                const seo = result.seo_report || {};
+                const aeo = result.aeo_report || {};
+                const ux = result.ux_report || {};
+                const fix = result.autofix_report || {};
+                const direct = {
+                    meta_has_cta: fix.fixed_meta_description,
+                    kw_in_title: fix.fixed_title_tag,
+                    kw_in_h1: fix.fixed_h1,
+                    kw_in_meta: fix.fixed_meta_description,
+                    schema_product: fix.schema_markup_snippet ? 'Open the AutoFix tab for Product schema code tailored to this page.' : null,
+                    faq_schema: fix.schema_markup_snippet ? 'Open the AutoFix tab for FAQ schema code for this product.' : null,
+                    aeo_llm_snippet: (aeo.recommendations || [])[0] || (aeo.quick_wins_for_ai || [])[0],
+                    aeo_conversational: (aeo.quick_wins_for_ai || [])[0] || (aeo.recommendations || [])[0],
+                    aeo_not_commodity: (aeo.recommendations || [])[1] || (aeo.gaps || [])[0],
+                    aeo_unique_perspective: (aeo.recommendations || [])[0],
+                    rag_citable: (aeo.rag_readiness?.issues || [])[0] || (aeo.recommendations || [])[0],
+                    rag_uvp: (aeo.gaps || [])[0],
+                    rag_factual: (aeo.recommendations || [])[0],
+                    geo_perplexity: (aeo.geo_signals?.issues || [])[0] || (aeo.recommendations || [])[0],
+                    geo_sge: (aeo.recommendations || [])[0],
+                    geo_direct_answer: (aeo.quick_wins_for_ai || [])[0],
+                };
+                if (direct[checkId]) {
+                    const val = direct[checkId];
+                    if (typeof val === 'string' && val.length > 0) {
+                        if (checkId === 'meta_has_cta' || checkId === 'kw_in_meta') {
+                            return `Use this meta description for ${ctx.productName}: "${val.slice(0, 160)}${val.length > 160 ? '…' : ''}"`;
+                        }
+                        if (checkId === 'kw_in_title') return `Suggested title for ${ctx.productName}: "${val}"`;
+                        if (checkId === 'kw_in_h1') return `Suggested main headline: "${val}"`;
+                        return val;
+                    }
+                }
+                const pool = [
+                    ...(fix.priority_action_plan || []).map(a => a.action || a),
+                    ...(seo.recommendations || []),
+                    ...(seo.quick_wins || []),
+                    ...(aeo.recommendations || []),
+                    ...(aeo.quick_wins_for_ai || []),
+                    ...(aeo.gaps || []),
+                    ...(ux.recommendations || []),
+                ].filter(Boolean);
+                const tokens = checkId.split('_').filter(t => t.length > 2 && !['aeo', 'tech', 'geo', 'rag'].includes(t));
+                return pool.find(item => {
+                    const lower = String(item).toLowerCase();
+                    return tokens.some(t => lower.includes(t.replace('kw', 'keyword')));
+                }) || null;
+            };
+
+            const personalizeGlossaryEntry = (entry, checkId, passed) => {
+                if (!entry) return {};
+                const ctx = mode1ProductCtx;
+                const agentFix = !passed ? getAgentFixForCheck(checkId, mode1Result, ctx) : null;
+                return {
+                    meaning: personalizeGlossaryText(entry.meaning, ctx),
+                    ok: personalizeGlossaryText(entry.ok, ctx),
+                    fail: personalizeGlossaryText(entry.fail, ctx),
+                    fix: agentFix || personalizeGlossaryText(entry.fix, ctx),
+                };
+            };
+
+            const predictedBoost = autofixRpt.estimated_seo_score_improvement != null
+                ? `+${Math.round(autofixRpt.estimated_seo_score_improvement * 10)} Pts`
+                : '--';
 
             const actionItems = autofixRpt.priority_action_plan?.length > 0
                 ? autofixRpt.priority_action_plan.slice(0, 3)
-                : [
-                    { action: 'Added Google "Rich Snippet" Support', expected_impact: 'We detected your product doesn\'t show stars or price in Google Search. Enabling this increases click-throughs by 30%.', priority: 'high' },
-                    { action: 'Added "Urgency" Conversion Badge', expected_impact: 'A subtle "Only 2 left in stock" text near the buy button drives immediate sales decisions.', priority: 'medium' },
-                    { action: 'AI-Answer Engine Readiness (ChatGPT/Gemini)', expected_impact: 'Injected a Conversational FAQ so when users ask AI search engines, your product gets recommended.', priority: 'medium' }
-                  ];
+                : [];
 
             const codeBlocks = autofixRpt.schema_markup_snippet
                 ? [
                     { filename: 'schema.jsonld (Auto-Fix Agent)', code: autofixRpt.schema_markup_snippet },
-                    { filename: 'seo_fixes.html (SEO Agent)', code: `<title>${autofixRpt.fixed_title_tag || 'Optimized Title Tag'}</title>\n<meta name="description" content="${autofixRpt.fixed_meta_description || 'Optimized meta description.'}">` }
+                    { filename: 'seo_fixes.html (SEO Agent)', code: `<title>${autofixRpt.fixed_title_tag || ''}</title>\n<meta name="description" content="${autofixRpt.fixed_meta_description || ''}">` }
                   ]
-                : [
-                    { filename: 'schema.jsonld (Auto-Fix Agent)', code: `<script type="application/ld+json">\n{\n  "@context": "https://schema.org/",\n  "@type": "Product",\n  "name": "Killer Jeans Product",\n  "offers": { "@type": "Offer", "availability": "https://schema.org/InStock" }\n}\n<\/script>` },
-                    { filename: 'dom_injection.html (Psychology Agent)', code: `<div class="urgency-badge" style="color:red; font-weight:bold;">\n  🔥 Only 2 left in stock in Middle East warehouse\n</div>` }
-                  ];
+                : [];
 
             // ── Helpers: Plain-English transformations for Business View ─────────
             const toFriendlyTitle = (action) => {
@@ -399,7 +928,7 @@
                 if (a.includes('schema') || a.includes('json-ld')) return "There's no behind-the-scenes code telling Google your product details. Competitors with this code show star ratings, prices and FAQs directly in search — yours doesn't.";
                 if (a.includes('h2') || a.includes('heading')) return "Your page jumps from one block of text to another with no clear sections. Think of it like a book with no chapter titles — hard to read, hard for Google to organize.";
                 if (a.includes('internal link')) return "Your page doesn't guide visitors to explore more products. Every extra link also helps Google discover and rank your pages faster.";
-                if (a.includes('keyword')) return "Your main product words (like 'jeans', 'denim') don't appear often enough. Google uses these words to decide who sees your page.";
+                if (a.includes('keyword')) return `Your main product words (like '${mode1ProductCtx.primaryKeyword}') don't appear often enough. Google uses these words to decide who sees your page.`;
                 if (a.includes('image') && a.includes('alt')) return "Each product image needs a short text description. Blind users need it, and Google reads these descriptions to understand and rank your images in image search.";
                 if (a.includes('title')) return "The title shown in browser tabs and Google results is too generic or long. A well-written title directly affects how many people click your search result.";
                 return impact || 'This fix will improve how search engines and customers interact with your page.';
@@ -454,11 +983,21 @@
             const blueprint      = mode2Result?.final_blueprint     || {};
             const understanding  = mode2Result?.business_understanding || {};
             const heroSection    = blueprint.page_sections?.find(s => s.order === 1) || blueprint.page_sections?.[0] || {};
-            const productTitle   = blueprint.seo_blueprint?.h1 || heroSection.content?.headline || 'Oversized GenZ Denim';
-            const productDesc    = heroSection.content?.body_copy || blueprint.executive_summary || 'Engineered for the Middle East climate. Crafted from 100% breathable organic cotton, offering a relaxed fit for maximum street cred.';
-            const ctaText        = heroSection.content?.cta || 'Pre-Order Now';
-            const brandCategory  = understanding.sub_category || understanding.product_category || 'Urban Collection';
+            const productTitle   = pageEdits.title || blueprint.seo_blueprint?.h1 || heroSection.content?.headline || understanding.product_name || 'Your Product';
+            const productDesc    = pageEdits.description || heroSection.content?.body_copy || blueprint.executive_summary || '';
+            const ctaText        = heroSection.content?.cta || 'Add to Cart';
+            const brandCategory  = understanding.sub_category || understanding.product_category || 'Product';
             const competitorPats = mode2Result?.pdp_research?.top_competitor_pdp_patterns || [];
+            const categoryImages = buildPromptImages(understanding, chatHistory);
+            const competitorSites = getCompetitorSites(understanding);
+            const materialContent = findBlueprintSection(blueprint.page_sections, /material|care/i)?.content?.body_copy
+                || (understanding.key_features || []).slice(0, 4).join('. ')
+                || 'Premium quality materials. Follow care label instructions. Dry clean recommended for delicate fabrics.';
+            const fitContent = findBlueprintSection(blueprint.page_sections, /fit|dimension|size/i)?.content?.body_copy
+                || understanding.primary_audience?.demographics
+                || 'Standard fit. Refer to the size guide for chest, waist, and length measurements.';
+            const blueprintFaqs = (mode2Result?.pdp_research?.faq_recommendations || mode2Result?.pdp_research?.recommended_faqs || []).slice(0, 2);
+            const accentStyle = pageEdits.accentColor ? { boxShadow: `0 0 0 3px ${pageEdits.accentColor}`, borderColor: pageEdits.accentColor } : {};
 
             // Sidebar user info
             const userName    = authUser?.fullName || authUser?.firstName || 'User';
@@ -471,8 +1010,11 @@
                     {/* TOAST */}
 
                     {checkDetail && (() => {
-                        const entry = checkGlossary[checkDetail.checkId] || {};
+                        const rawEntry = checkGlossary[checkDetail.checkId] || {};
                         const passed = Boolean(checkDetail.val);
+                        const entry = mode1Result
+                            ? personalizeGlossaryEntry(rawEntry, checkDetail.checkId, passed)
+                            : rawEntry;
                         return (
                             <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50" onClick={() => setCheckDetail(null)}>
                                 <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
@@ -538,8 +1080,16 @@
                                 <span className="font-bold text-xl tracking-tight text-slate-900">OptiPDP</span>
                             </div>
                             <nav className="space-y-2 text-sm font-medium text-slate-600">
-                                <button onClick={() => setView('HOME')} className={`w-full flex items-center gap-3 p-2 rounded-lg transition-colors ${view === 'HOME' ? 'bg-indigo-50 text-indigo-700 font-bold' : 'hover:bg-slate-50'}`}>
+                                <button onClick={() => setView('HOME')} className={`w-full flex items-center gap-3 p-2 rounded-lg transition-colors ${isHomeNav ? 'bg-indigo-50 text-indigo-700 font-bold' : 'hover:bg-slate-50'}`}>
                                     <i className="ph ph-sparkle text-lg"></i> AI Optimization
+                                </button>
+                                <button onClick={() => setView('HISTORY')} className={`w-full flex items-center gap-3 p-2 rounded-lg transition-colors ${view === 'HISTORY' ? 'bg-indigo-50 text-indigo-700 font-bold' : 'hover:bg-slate-50'}`}>
+                                    <i className="ph ph-clock-counter-clockwise text-lg"></i> History
+                                    {(historyItems.analysis_reports?.length || 0) + (historyItems.blueprints?.length || 0) > 0 && (
+                                        <span className="ml-auto text-[10px] font-bold bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full">
+                                            {(historyItems.analysis_reports?.length || 0) + (historyItems.blueprints?.length || 0)}
+                                        </span>
+                                    )}
                                 </button>
                             </nav>
                         </div>
@@ -571,13 +1121,18 @@
                         <header className="h-16 border-b border-slate-200 bg-white/80 backdrop-blur px-8 flex items-center justify-between sticky top-0 z-10">
                             <h2 className="font-semibold text-slate-800 flex items-center gap-2">
                                 {view !== 'HOME' && (
-                                    <button onClick={() => setView('HOME')} className="hover:text-indigo-600"><i className="ph ph-arrow-left"></i></button>
+                                    <>
+                                        <button onClick={goNavBack} disabled={navIdx <= 0} className={`hover:text-indigo-600 ${navIdx <= 0 ? 'opacity-30 cursor-not-allowed' : ''}`} title="Back"><i className="ph ph-arrow-left"></i></button>
+                                        <button onClick={goNavForward} disabled={navIdx >= navStack.length - 1} className={`hover:text-indigo-600 ${navIdx >= navStack.length - 1 ? 'opacity-30 cursor-not-allowed' : ''}`} title="Forward"><i className="ph ph-arrow-right"></i></button>
+                                    </>
                                 )}
                                 AI Commerce Copilot
                             </h2>
-                            <div className="flex items-center gap-2 text-xs font-semibold bg-slate-100 text-slate-600 px-3 py-1.5 rounded-full">
-                                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-                                Multi-Agent Engine
+                            <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 text-xs font-semibold bg-gradient-to-r from-indigo-100 to-purple-100 text-indigo-700 px-3 py-1.5 rounded-full">
+                                    <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                                    {agentBadgeCount} AI Agents Ready
+                                </div>
                             </div>
                         </header>
 
@@ -585,34 +1140,317 @@
 
                             {/* ── VIEW: HOME ── */}
                             {view === 'HOME' && (
-                                <div className="fade-in mt-10">
-                                    <h1 className="text-3xl font-extrabold text-slate-900 mb-2 text-center">Welcome to OptiPDP</h1>
-                                    <p className="text-slate-500 mb-10 text-center max-w-xl mx-auto">Paste a product page URL for a full AI audit, or describe your business to generate a new page from scratch.</p>
-                                    <div className="grid grid-cols-2 gap-6 max-w-3xl mx-auto">
-                                        <div onClick={() => setView('MODE1_INPUT')} className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md hover:border-indigo-300 cursor-pointer transition-all group">
-                                            <div className="w-14 h-14 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform"><i className="ph ph-link text-2xl"></i></div>
-                                            <h3 className="text-xl font-bold mb-2">Mode 1: Optimize Existing PDP</h3>
-                                            <p className="text-sm text-slate-500">Paste your product page URL. We scan it with 10 AI agents and give you scores, fixes, and copy-paste content.</p>
+                                <div className="fade-in">
+                                    {/* HERO SECTION */}
+                                    <div className="text-center mb-16 mt-8 max-w-4xl mx-auto">
+                                        <div className="mb-6 inline-block">
+                                            <span className="bg-gradient-to-r from-indigo-100 to-purple-100 text-indigo-700 px-4 py-2 rounded-full text-sm font-bold flex items-center gap-2 w-fit mx-auto">
+                                                <i className="ph ph-rocket-launch"></i> AI for Modern Commerce
+                                            </span>
                                         </div>
-                                        <div onClick={() => setView('MODE2_INPUT')} className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md hover:border-purple-300 cursor-pointer transition-all group">
-                                            <div className="w-14 h-14 bg-purple-50 text-purple-600 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform"><i className="ph ph-rocket-launch text-2xl"></i></div>
-                                            <h3 className="text-xl font-bold mb-2">Mode 2: AI Copilot Strategy</h3>
-                                            <p className="text-sm text-slate-500">I don't have a page yet. Generate a layout based on my business idea.</p>
+                                        <h1 className="text-5xl md:text-6xl font-black text-slate-900 mb-4 leading-tight">
+                                            Turn Your Product Pages Into <span className="bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">Sales Machines</span>
+                                        </h1>
+                                        <p className="text-xl text-slate-600 mb-8 max-w-2xl mx-auto leading-relaxed">
+                                            10 AI agents audit your PDPs in minutes. Get SEO scores, AI visibility insights, conversion fixes, and ready-to-use copy. Or generate new high-converting pages from scratch.
+                                        </p>
+                                        
+                                        
+                                     
+                                    </div>
+
+                                    {/* TWO MODES */}
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto mb-16">
+                                        {/* MODE 1 */}
+                                        <div 
+                                            onClick={() => setView('MODE1_INPUT')} 
+                                            className="group cursor-pointer"
+                                        >
+                                            <div className="bg-white p-8 rounded-2xl border-2 border-slate-200 shadow-sm hover:shadow-xl hover:border-indigo-400 transition-all duration-300 h-full">
+                                                <div className="w-16 h-16 bg-gradient-to-br from-indigo-100 to-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300 shadow-sm">
+                                                    <i className="ph ph-link text-3xl"></i>
+                                                </div>
+                                                <h3 className="text-2xl font-bold mb-2 text-slate-900">Audit & Optimize</h3>
+                                                <p className="text-slate-600 mb-6 leading-relaxed">
+                                                    Paste your product URL. 10 AI agents scan it instantly and give you SEO scores, AI visibility insights, psychological triggers, and competitor benchmarks.
+                                                </p>
+                                                <ul className="space-y-2 mb-6 text-sm text-slate-700">
+                                                    <li className="flex items-center gap-2"><i className="ph ph-check-circle text-emerald-500 text-lg"></i> 60+ SEO checks</li>
+                                                    <li className="flex items-center gap-2"><i className="ph ph-check-circle text-emerald-500 text-lg"></i> Copy-paste fixes ready</li>
+                                                    <li className="flex items-center gap-2"><i className="ph ph-check-circle text-emerald-500 text-lg"></i> Competitor analysis</li>
+                                                </ul>
+                                                <button className="w-full bg-indigo-600 text-white py-3 rounded-lg font-bold hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2 group-hover:-translate-y-1 transition-transform">
+                                                    <i className="ph ph-magic-wand"></i> Audit Now
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {/* MODE 2 */}
+                                        <div 
+                                            onClick={() => setView('MODE2_INPUT')} 
+                                            className="group cursor-pointer"
+                                        >
+                                            <div className="bg-gradient-to-br from-purple-50 to-white p-8 rounded-2xl border-2 border-purple-300 shadow-sm hover:shadow-xl transition-all duration-300 h-full relative overflow-hidden">
+                                                <div className="absolute -top-10 -right-10 w-40 h-40 bg-purple-200/30 rounded-full blur-3xl"></div>
+                                                <div className="relative z-10">
+                                                    <div className="w-16 h-16 bg-gradient-to-br from-purple-100 to-purple-50 text-purple-600 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300 shadow-sm">
+                                                        <i className="ph ph-rocket-launch text-3xl"></i>
+                                                    </div>
+                                                    <h3 className="text-2xl font-bold mb-2 text-slate-900">Build New Pages</h3>
+                                                    <p className="text-slate-600 mb-6 leading-relaxed">
+                                                        Describe your product or business. Our AI generates a complete, high-converting page layout with SEO-optimized copy, CTAs, and psychological triggers.
+                                                    </p>
+                                                    <ul className="space-y-2 mb-6 text-sm text-slate-700">
+                                                        <li className="flex items-center gap-2"><i className="ph ph-check-circle text-emerald-500 text-lg"></i> AI-researched competitors</li>
+                                                        <li className="flex items-center gap-2"><i className="ph ph-check-circle text-emerald-500 text-lg"></i> Instant page blueprint</li>
+                                                        <li className="flex items-center gap-2"><i className="ph ph-check-circle text-emerald-500 text-lg"></i> Live refine with copilot</li>
+                                                    </ul>
+                                                    <button className="w-full bg-gradient-to-r from-purple-600 to-purple-700 text-white py-3 rounded-lg font-bold hover:from-purple-700 hover:to-purple-800 transition-all flex items-center justify-center gap-2 group-hover:-translate-y-1 transition-transform shadow-md hover:shadow-lg">
+                                                        <i className="ph ph-pen-nib"></i> Generate Page
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* BENEFITS SECTION */}
+                                    <div className="bg-slate-900 rounded-2xl p-12 mb-16 text-white">
+                                        <h2 className="text-3xl font-bold text-center mb-10">Why OptiPDP Works</h2>
+                                        <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
+                                            <div className="flex flex-col items-center text-center">
+                                                <div className="w-14 h-14 bg-indigo-600 rounded-full flex items-center justify-center mb-4">
+                                                    <i className="ph ph-gauge text-2xl"></i>
+                                                </div>
+                                                <h4 className="font-bold mb-2">Real Insights</h4>
+                                                <p className="text-slate-300 text-sm">See exactly why shoppers leave without buying</p>
+                                            </div>
+                                            <div className="flex flex-col items-center text-center">
+                                                <div className="w-14 h-14 bg-purple-600 rounded-full flex items-center justify-center mb-4">
+                                                    <i className="ph ph-robot text-2xl"></i>
+                                                </div>
+                                                <h4 className="font-bold mb-2">10 AI Agents</h4>
+                                                <p className="text-slate-300 text-sm">Each specializes in SEO, AI visibility, UX, psychology</p>
+                                            </div>
+                                            <div className="flex flex-col items-center text-center">
+                                                <div className="w-14 h-14 bg-green-600 rounded-full flex items-center justify-center mb-4">
+                                                    <i className="ph ph-copy text-2xl"></i>
+                                                </div>
+                                                <h4 className="font-bold mb-2">Copy-Paste Ready</h4>
+                                                <p className="text-slate-300 text-sm">Get production-ready code and content instantly</p>
+                                            </div>
+                                            <div className="flex flex-col items-center text-center">
+                                                <div className="w-14 h-14 bg-orange-600 rounded-full flex items-center justify-center mb-4">
+                                                    <i className="ph ph-lightning text-2xl"></i>
+                                                </div>
+                                                <h4 className="font-bold mb-2">Fast Results</h4>
+                                                <p className="text-slate-300 text-sm">Full audit in 2-4 mins, new pages in seconds</p>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
                             )}
 
+                            {/* ── VIEW: HISTORY ── */}
+                            {view === 'HISTORY' && (() => {
+                                const audits = historyItems.analysis_reports || [];
+                                const blueprints = historyItems.blueprints || [];
+                                const q = historySearch.toLowerCase().trim();
+                                const filteredAudits = audits.filter(r =>
+                                    !q || r.source_url?.toLowerCase().includes(q) || extractDomain(r.source_url).includes(q)
+                                );
+                                const filteredBlueprints = blueprints.filter(b =>
+                                    !q || (b.title || '').toLowerCase().includes(q) || (b.business_input || '').toLowerCase().includes(q)
+                                );
+                                const mergedAll = [
+                                    ...filteredAudits.map(r => ({ kind: 'audit', data: r, at: r.created_at })),
+                                    ...filteredBlueprints.map(b => ({ kind: 'blueprint', data: b, at: b.created_at })),
+                                ].sort((a, b) => new Date(b.at) - new Date(a.at));
+                                const showList = historyFilter === 'all' ? mergedAll
+                                    : historyFilter === 'audits' ? filteredAudits.map(r => ({ kind: 'audit', data: r, at: r.created_at }))
+                                    : filteredBlueprints.map(b => ({ kind: 'blueprint', data: b, at: b.created_at }));
+                                const isEmpty = !historyLoading && audits.length === 0 && blueprints.length === 0;
+                                const noResults = !historyLoading && showList.length === 0 && !isEmpty;
+
+                                return (
+                                    <div className="fade-in max-w-4xl mx-auto">
+                                        {/* Header */}
+                                        <div className="mb-8">
+                                            <div className="flex items-center gap-3 mb-2">
+                                                <div className="w-10 h-10 rounded-xl bg-indigo-100 text-indigo-600 flex items-center justify-center">
+                                                    <i className="ph ph-clock-counter-clockwise text-xl"></i>
+                                                </div>
+                                                <div>
+                                                    <h2 className="text-2xl font-bold text-slate-900">Your History</h2>
+                                                    <p className="text-slate-500 text-sm">Every URL audit and blueprint you run is saved here. Click any item to open it again.</p>
+                                                </div>
+                                            </div>
+                                            <div className="flex flex-wrap gap-3 mt-5">
+                                                <div className="bg-white border border-slate-200 rounded-xl px-4 py-3 flex items-center gap-3 min-w-[140px]">
+                                                    <div className="w-9 h-9 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center"><i className="ph ph-link"></i></div>
+                                                    <div>
+                                                        <p className="text-xl font-black text-slate-900">{audits.length}</p>
+                                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">URL Audits</p>
+                                                    </div>
+                                                </div>
+                                                <div className="bg-white border border-slate-200 rounded-xl px-4 py-3 flex items-center gap-3 min-w-[140px]">
+                                                    <div className="w-9 h-9 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center"><i className="ph ph-layout"></i></div>
+                                                    <div>
+                                                        <p className="text-xl font-black text-slate-900">{blueprints.length}</p>
+                                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">Blueprints</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Search + filters */}
+                                        <div className="flex flex-col sm:flex-row gap-3 mb-6">
+                                            <div className="flex-1 relative">
+                                                <i className="ph ph-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                                                <input
+                                                    type="text"
+                                                    placeholder="Search by URL, domain, or prompt..."
+                                                    value={historySearch}
+                                                    onChange={e => setHistorySearch(e.target.value)}
+                                                    className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:border-indigo-400"
+                                                />
+                                            </div>
+                                            <div className="flex gap-1 bg-slate-100 p-1 rounded-xl">
+                                                {[
+                                                    { id: 'all', label: 'All', count: mergedAll.length },
+                                                    { id: 'audits', label: 'Audits', count: filteredAudits.length },
+                                                    { id: 'blueprints', label: 'Blueprints', count: filteredBlueprints.length },
+                                                ].map(tab => (
+                                                    <button key={tab.id} onClick={() => setHistoryFilter(tab.id)}
+                                                        className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${historyFilter === tab.id ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                                                        {tab.label} ({tab.count})
+                                                    </button>
+                                                ))}
+                                            </div>
+                                            <button onClick={loadHistory} disabled={historyLoading}
+                                                className="px-4 py-2.5 border border-slate-200 bg-white rounded-xl text-sm font-medium hover:bg-slate-50 flex items-center justify-center gap-2 shrink-0">
+                                                <i className={`ph ph-arrows-clockwise ${historyLoading ? 'animate-spin' : ''}`}></i> Refresh
+                                            </button>
+                                        </div>
+
+                                        {/* List */}
+                                        {historyLoading ? (
+                                            <div className="space-y-3">
+                                                {[1, 2, 3].map(i => (
+                                                    <div key={i} className="h-20 bg-white border border-slate-100 rounded-2xl animate-pulse" />
+                                                ))}
+                                            </div>
+                                        ) : isEmpty ? (
+                                            <div className="text-center py-16 bg-white border border-dashed border-slate-200 rounded-2xl">
+                                                <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                                    <i className="ph ph-folder-open text-3xl text-slate-400"></i>
+                                                </div>
+                                                <h3 className="font-bold text-slate-800 mb-2">No history yet</h3>
+                                                <p className="text-sm text-slate-500 mb-6 max-w-sm mx-auto">Run your first URL audit or generate a blueprint — it will appear here automatically.</p>
+                                                <div className="flex gap-3 justify-center">
+                                                    <button onClick={() => setView('MODE1_INPUT')} className="px-5 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700">Audit a URL</button>
+                                                    <button onClick={() => setView('MODE2_INPUT')} className="px-5 py-2.5 bg-purple-600 text-white rounded-xl text-sm font-bold hover:bg-purple-700">Create Blueprint</button>
+                                                </div>
+                                            </div>
+                                        ) : noResults ? (
+                                            <div className="text-center py-12 bg-white border border-slate-200 rounded-2xl">
+                                                <i className="ph ph-magnifying-glass text-3xl text-slate-300 mb-3"></i>
+                                                <p className="text-slate-600 font-medium">No results for "{historySearch}"</p>
+                                                <button onClick={() => setHistorySearch('')} className="text-indigo-600 text-sm mt-2 hover:underline">Clear search</button>
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-3">
+                                                {[...showList].sort((a, b) => new Date(b.at) - new Date(a.at)).map(entry => {
+                                                    const item = entry.data || entry;
+                                                    const id = item.id;
+                                                    const opening = historyOpening === id;
+                                                    const isAudit = entry.kind === 'audit';
+
+                                                    if (isAudit && item.source_url) {
+                                                        const domain = extractDomain(item.source_url);
+                                                        const score = healthScoreDisplay(item);
+                                                        const badge = statusBadge(item.status);
+                                                        return (
+                                                            <button key={`a-${id}`} disabled={opening} onClick={() => openHistoryReport(id)}
+                                                                className="w-full group flex items-center gap-4 p-4 bg-white border border-slate-200 rounded-2xl hover:border-indigo-300 hover:shadow-md transition-all text-left disabled:opacity-60">
+                                                                <img src={faviconUrl(item.source_url)} alt="" className="w-11 h-11 rounded-xl border border-slate-100 bg-slate-50 p-1.5 shrink-0" />
+                                                                <div className="flex-1 min-w-0">
+                                                                    <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                                                                        <span className="text-[10px] font-bold uppercase tracking-wide bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">Mode 1 · Audit</span>
+                                                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${badge.cls}`}>{badge.label}</span>
+                                                                    </div>
+                                                                    <p className="font-bold text-slate-900 truncate">{domain}</p>
+                                                                    <p className="text-xs text-slate-500 truncate">{item.source_url}</p>
+                                                                </div>
+                                                                {score != null && (
+                                                                    <div className={`shrink-0 w-14 h-14 rounded-xl border flex flex-col items-center justify-center ${healthScoreColor(score)}`}>
+                                                                        <span className="text-lg font-black leading-none">{score}</span>
+                                                                        <span className="text-[9px] font-bold opacity-70">/100</span>
+                                                                    </div>
+                                                                )}
+                                                                <div className="shrink-0 text-right hidden sm:block">
+                                                                    <p className="text-xs text-slate-400">{formatRelativeTime(item.created_at)}</p>
+                                                                    <p className="text-xs text-indigo-600 font-semibold mt-1 opacity-0 group-hover:opacity-100 transition-opacity">Open report →</p>
+                                                                </div>
+                                                                {opening && <i className="ph ph-circle-notch animate-spin text-indigo-500 text-xl shrink-0"></i>}
+                                                            </button>
+                                                        );
+                                                    }
+
+                                                    const badge = statusBadge(item.status);
+                                                    const prompt = item.business_input || item.title || 'Blueprint';
+                                                    return (
+                                                        <button key={`b-${id}`} disabled={opening} onClick={() => openHistoryBlueprint(id)}
+                                                            className="w-full group flex items-center gap-4 p-4 bg-white border border-slate-200 rounded-2xl hover:border-purple-300 hover:shadow-md transition-all text-left disabled:opacity-60">
+                                                            <div className="w-11 h-11 rounded-xl bg-purple-100 text-purple-600 flex items-center justify-center shrink-0">
+                                                                <i className="ph ph-chat-teardrop-text text-xl"></i>
+                                                            </div>
+                                                            <div className="flex-1 min-w-0">
+                                                                <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                                                                    <span className="text-[10px] font-bold uppercase tracking-wide bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">Mode 2 · Blueprint</span>
+                                                                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${badge.cls}`}>{badge.label}</span>
+                                                                </div>
+                                                                <p className="font-bold text-slate-900 truncate">{item.title || prompt.slice(0, 55) + (prompt.length > 55 ? '…' : '')}</p>
+                                                                <p className="text-xs text-slate-500 line-clamp-2">{prompt}</p>
+                                                            </div>
+                                                            <div className="shrink-0 text-right hidden sm:block">
+                                                                <p className="text-xs text-slate-400">{formatRelativeTime(item.created_at)}</p>
+                                                                <p className="text-xs text-purple-600 font-semibold mt-1 opacity-0 group-hover:opacity-100 transition-opacity">Open blueprint →</p>
+                                                            </div>
+                                                            {opening && <i className="ph ph-circle-notch animate-spin text-purple-500 text-xl shrink-0"></i>}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+
+                                        <p className="text-center text-xs text-slate-400 mt-8">
+                                            <i className="ph ph-cloud-check mr-1"></i> Saved securely to your workspace
+                                        </p>
+                                    </div>
+                                );
+                            })()}
+
                             {/* ── VIEW: MODE 1 INPUT ── */}
                             {view === 'MODE1_INPUT' && (
                                 <div className="fade-in mt-12 max-w-2xl mx-auto">
-                                    <h1 className="text-3xl font-extrabold text-slate-900 mb-2">Optimize Existing URL</h1>
-                                    <p className="text-slate-500 mb-8">Paste any product page URL. We score it across Google ranking, AI visibility, conversion, competitors, and psychology — then give you ready-to-use fixes.</p>
+                                    <h1 className="text-3xl font-extrabold text-slate-900 mb-2">Audit Your Product Page</h1>
+                                    <p className="text-slate-500 mb-4 max-w-xl mx-auto">
+                                        Paste any URL. 10 AI agents scan it in 2–4 minutes. Get SEO, AI visibility, conversion, psychological, and competitor scores. Plus ready-to-use fixes and copy.
+                                    </p>
+                                    {isLikelyHomepageUrl(urlInput) && urlInput.trim() && (
+                                        <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl flex gap-3 text-sm text-amber-900 max-w-2xl mx-auto">
+                                            <i className="ph ph-warning text-amber-500 text-xl shrink-0"></i>
+                                            <div>
+                                                <p className="font-semibold">Homepage detected</p>
+                                                <p className="text-amber-800/90">For the best audit, paste a <strong>product page URL</strong> (e.g. <code className="text-xs bg-amber-100 px-1 rounded">/products/...</code>). Homepages give limited PDP insights.</p>
+                                            </div>
+                                        </div>
+                                    )}
                                     <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-200 flex items-center focus-within:border-indigo-400">
                                         <div className="pl-4 text-slate-400"><i className="ph ph-link text-xl"></i></div>
                                         <input
                                             type="url"
-                                            placeholder="https://www.killerjeans.com/product/xyz"
+                                            placeholder="https://www.fitpass.co.in/"
                                             className="w-full p-3 bg-transparent outline-none text-slate-700"
                                             value={urlInput}
                                             onChange={e => setUrlInput(e.target.value)}
@@ -625,31 +1463,48 @@
                                 </div>
                             )}
 
-                            {/* ── VIEW: MODE 2 INPUT ── */}
+                            {/* ── VIEW: MODE 2 INPUT (Chat UI) ── */}
                             {view === 'MODE2_INPUT' && (
-                                <div className="fade-in mt-8 max-w-2xl mx-auto">
-                                    <h1 className="text-3xl font-extrabold text-slate-900 mb-2">Define Your Business</h1>
-                                    <p className="text-slate-500 mb-8">Tell us what you sell. We will benchmark competitors and design the perfect page.</p>
-                                    <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 space-y-5">
-                                        <div>
-                                            <label className="text-xs font-bold text-slate-500 uppercase">Product Details</label>
-                                            <input type="text" value={businessData.product} onChange={e=>setBusinessData({...businessData,product:e.target.value})} className="w-full mt-1 p-3 border rounded-lg focus:outline-indigo-500 bg-slate-50" />
+                                <div className="fade-in mt-8 max-w-3xl mx-auto">
+                                    <h1 className="text-3xl font-extrabold text-slate-900 mb-2">Refine Your Brief (Chat)</h1>
+                                    <p className="text-slate-500 mb-4">Chat with the assistant and upload files to improve the blueprint.</p>
+
+                                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                                        {/* Chat history (scrollable) */}
+                                        <div className="h-80 overflow-y-auto p-4 border rounded-lg bg-slate-50 mb-4 flex flex-col gap-3">
+                                            {chatHistory.map((m, idx) => (
+                                                <div key={idx} className={`flex ${m.role === 'user' ? 'justify-end' : m.role === 'ai' ? 'justify-start' : 'justify-center'}`}>
+                                                    <div className={`inline-block max-w-[80%] p-3 rounded-lg ${m.role === 'user' ? 'bg-indigo-600 text-white' : m.role === 'ai' ? 'bg-white text-slate-800 border border-slate-200' : 'bg-slate-100 text-slate-700 text-sm'}`}>
+                                                        {m.text}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                            <div ref={chatEndRef} />
                                         </div>
-                                        <div className="grid grid-cols-2 gap-4">
-                                            <div>
-                                                <label className="text-xs font-bold text-slate-500 uppercase">Target Audience</label>
-                                                <input type="text" value={businessData.audience} onChange={e=>setBusinessData({...businessData,audience:e.target.value})} className="w-full mt-1 p-3 border rounded-lg focus:outline-indigo-500 bg-slate-50" />
-                                            </div>
-                                            <div>
-                                                <label className="text-xs font-bold text-slate-500 uppercase">Target Region</label>
-                                                <input type="text" value={businessData.region} onChange={e=>setBusinessData({...businessData,region:e.target.value})} className="w-full mt-1 p-3 border rounded-lg focus:outline-indigo-500 bg-slate-50" />
-                                            </div>
+
+                                        <div className="flex items-center gap-3">
+                                            <label className="p-2 bg-white border rounded-lg cursor-pointer flex items-center gap-2" title="Attach file">
+                                                <i className="ph ph-paperclip text-xl text-slate-600"></i>
+                                                <input id="file-input" type="file" accept=".pdf,.docx,.pptx" style={{ display: 'none' }} onChange={async (e) => {
+                                                    const file = e.target.files && e.target.files[0];
+                                                    if (!file) return;
+                                                    await uploadFile(file);
+                                                    e.target.value = null;
+                                                }} />
+                                            </label>
+
+                                            <input value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }} placeholder="Type your brief or refine instructions..." className="flex-1 p-3 border rounded-lg bg-white" />
+
+                                            <button onClick={handleSendMessage} className="px-4 py-2 bg-indigo-600 text-white rounded-lg">Send</button>
                                         </div>
-                                        <div>
-                                            <label className="text-xs font-bold text-slate-500 uppercase">Material / USP</label>
-                                            <input type="text" value={businessData.material} onChange={e=>setBusinessData({...businessData,material:e.target.value})} className="w-full mt-1 p-3 border rounded-lg focus:outline-indigo-500 bg-slate-50" />
+
+                                        <div className="mt-4 flex gap-3">
+                                            <button onClick={() => runMode2FromChat(chatHistory, {
+                                                setView, setAnalyzingText, setAnalyzingProgress, setMode2Result, showToast, setViewOnFail: 'MODE2_INPUT', onComplete: loadHistory
+                                            })} className="bg-purple-600 text-white px-4 py-2 rounded-lg">Generate Blueprint</button>
+
+                                            <button onClick={() => { setChatHistory([{ role: 'ai', text: 'I have generated the initial high-converting layout based on your business brief. How would you like to refine it?' }]); setChatInput(''); showToast('Chat reset'); }} className="bg-white border px-4 py-2 rounded-lg">Reset Chat</button>
                                         </div>
-                                        <button onClick={runMode2Analysis} className="w-full bg-purple-600 text-white px-6 py-3 rounded-lg hover:bg-purple-700 font-semibold transition mt-4 shadow-md">Discover Layouts →</button>
                                     </div>
                                 </div>
                             )}
@@ -664,7 +1519,11 @@
                                     <div className="bg-white px-6 py-2 rounded-full shadow-sm border border-slate-200 text-sm font-medium text-slate-600 flex items-center gap-3">
                                         <i className="ph ph-circle-notch animate-spin text-indigo-500"></i> {analyzingText}
                                     </div>
-                                    <p className="text-xs text-slate-400 mt-4">10 AI agents running — this may take 2–3 minutes</p>
+                                    <p className="text-xs text-slate-400 mt-4">
+                                        {view === 'ANALYZING'
+                                            ? `${analyzingProgress.completed}/${analyzingProgress.total} agents complete — this may take 2–4 minutes`
+                                            : `${analyzingProgress.completed}/${analyzingProgress.total} agents complete — building your blueprint`}
+                                    </p>
                                 </div>
                             )}
 
@@ -687,6 +1546,7 @@
                                 const healthScore = diagnosisRpt.overall_health_score != null ? (diagnosisRpt.overall_health_score * 10).toFixed(0) : '--';
 
                                 const REPORT_TABS = [
+                                    { id: 'WEBSITE', label: 'Your Website' },
                                     { id: 'SEO', label: 'Google Ranking' },
                                     { id: 'AEO', label: 'AI Visibility' },
                                     { id: 'UX', label: 'Conversion & UX' },
@@ -694,6 +1554,7 @@
                                     { id: 'PSYCHOLOGY', label: 'Buyer Psychology' },
                                     { id: 'AUTOFIX', label: 'Auto-Fix' },
                                     { id: 'CONTENT', label: 'Content Studio' },
+                                    { id: 'OPTIMIZED', label: 'AI Preview' },
                                 ];
 
                                 const getScoreColor = (val) => {
@@ -787,9 +1648,7 @@
                                     );
                                 };
 
-                                const productData = mode1Result?.json_structured_data
-                                    || (mode1Result?.agent_reports || []).find(r => r.agent === 'extractor_agent')?.output
-                                    || {};
+                                const productData = mode1ProductData;
                                 const analyzedUrl = mode1Result?.source_url || urlInput || '';
                                 const agentReports = mode1Result?.agent_reports || [];
                                 const getAgentMeta = (name) => agentReports.find(r => r.agent === name) || {};
@@ -943,8 +1802,8 @@
                                                 <button onClick={() => showToast('Report PDF Downloaded!')} className="px-4 py-2 border border-slate-300 bg-white rounded-lg font-medium hover:bg-slate-50 flex items-center gap-2 text-slate-700">
                                                     <i className="ph ph-download-simple"></i> Download PDF
                                                 </button>
-                                                <button onClick={() => setView('PREVIEW_MODE1')} className="px-5 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 flex items-center gap-2">
-                                                    <i className="ph ph-eye"></i> See Visual Preview
+                                                <button onClick={() => setReportTab('OPTIMIZED')} className="px-5 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 flex items-center gap-2">
+                                                    <i className="ph ph-eye"></i> See AI Preview
                                                 </button>
                                             </div>
                                         </div>
@@ -985,6 +1844,54 @@
                                         </div>
 
                                         <div className="space-y-6">
+                                            {reportTab === 'WEBSITE' && (
+                                                <div className="space-y-4">
+                                                    <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 flex gap-3">
+                                                        <i className="ph ph-globe text-blue-600 text-xl shrink-0"></i>
+                                                        <div className="text-sm text-blue-900">
+                                                            <p className="font-semibold mb-1">Live website preview</p>
+                                                            <p>This is your actual site at <strong>{analyzedUrl}</strong>. Review it first, then explore agent findings in the tabs above.</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                                                        <div className="bg-slate-100 px-4 py-2 text-xs text-slate-500 flex items-center gap-2 border-b">
+                                                            <i className="ph ph-lock"></i> {analyzedUrl}
+                                                            <a href={analyzedUrl} target="_blank" rel="noopener noreferrer" className="ml-auto text-indigo-600 hover:underline">Open in new tab</a>
+                                                        </div>
+                                                        <iframe title="Website preview" src={analyzedUrl} className="w-full h-[70vh] border-0 bg-white" sandbox="allow-scripts allow-same-origin allow-popups" />
+                                                        <p className="text-xs text-slate-400 px-4 py-2 bg-slate-50 border-t">If the preview is blank, the site blocks embedding — use <strong>Open in new tab</strong> above.</p>
+                                                    </div>
+                                                </div>
+                                            )}
+                                            {reportTab === 'OPTIMIZED' && (
+                                                <div className="space-y-4">
+                                                    <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 text-sm text-emerald-900">
+                                                        <strong>AI-optimized preview</strong> — based on scraped data and agent recommendations from your 10-agent audit.
+                                                    </div>
+                                                    <div className="flex justify-center">
+                                                        <div className="flex bg-slate-200 p-1 rounded-full w-80 relative shadow-inner">
+                                                            <div className={`absolute top-1 bottom-1 w-1/2 bg-white rounded-full shadow transition-all duration-300 ${previewToggle==='ORIGINAL'?'left-1':'left-[156px]'}`}></div>
+                                                            <button onClick={() => setPreviewToggle('ORIGINAL')} className={`w-1/2 text-sm font-bold py-2 relative z-10 ${previewToggle==='ORIGINAL'?'text-slate-800':'text-slate-500'}`}>Original</button>
+                                                            <button onClick={() => setPreviewToggle('OPTIMIZED')} className={`w-1/2 text-sm font-bold py-2 relative z-10 ${previewToggle==='OPTIMIZED'?'text-green-600':'text-slate-500'}`}>AI Optimized</button>
+                                                        </div>
+                                                    </div>
+                                                    <div className="bg-white border border-slate-200 rounded-xl overflow-hidden max-w-4xl mx-auto shadow-sm p-8 flex gap-8">
+                                                        <div className="w-1/2 bg-slate-100 rounded-xl h-80 flex items-center justify-center overflow-hidden">
+                                                            {mode1ProductCtx.imageUrl ? (
+                                                                <img src={mode1ProductCtx.imageUrl} className="object-cover w-full h-full" alt={mode1ProductCtx.productName} />
+                                                            ) : (
+                                                                <div className="text-slate-400 text-center text-xs p-4"><i className="ph ph-image text-4xl block mb-2"></i>No image found</div>
+                                                            )}
+                                                        </div>
+                                                        <div className="w-1/2">
+                                                            <h1 className="text-2xl font-bold mb-2">{previewToggle === 'OPTIMIZED' ? (autofixRpt.fixed_h1 || mode1ProductData.product_name || 'Product') : (mode1ProductData.product_name || 'Product')}</h1>
+                                                            <p className="text-xl font-semibold mb-4">{formatProductPrice(mode1ProductData)}</p>
+                                                            <p className="text-sm text-slate-600 mb-4">{previewToggle === 'OPTIMIZED' && autofixRpt.rewritten_product_description ? autofixRpt.rewritten_product_description.slice(0, 220) + '...' : (mode1ProductData.description?.slice(0, 220) || '—')}</p>
+                                                            <button className="w-full py-3 bg-indigo-600 text-white rounded-lg font-bold">{mode1ProductData.above_fold_cta || 'Shop Now'}</button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
                                             {reportTab === 'SEO' && (
                                                 <div className="space-y-6">
                                                     <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 flex gap-3">
@@ -1110,7 +2017,7 @@
                                                         <i className="ph ph-info text-indigo-600 text-xl shrink-0 mt-0.5"></i>
                                                         <div className="text-sm text-indigo-900">
                                                             <p className="font-semibold mb-1">Will AI recommend your product?</p>
-                                                            <p className="text-indigo-800/90">When shoppers ask ChatGPT, Gemini, or Perplexity "best jeans under ₹2000" — will your product appear? This tab shows exactly why it might not, and what to fix.</p>
+                                                            <p className="text-indigo-800/90">When shoppers ask ChatGPT, Gemini, or Perplexity &ldquo;{mode1ProductCtx.sampleQuery}&rdquo; &mdash; will {mode1ProductCtx.productName} appear? This tab shows exactly why it might not, and what to fix.</p>
                                                         </div>
                                                     </div>
 
@@ -1615,7 +2522,7 @@
                                                             ))}
                                                             {codeBlocks.map((block,i) => (
                                                                 <div key={i}>
-                                                                    <p className="text-slate-500 text-xs mb-1">{block.language}</p>
+                                                                    <p className="text-slate-500 text-xs mb-1">{block.filename}</p>
                                                                     <pre className="bg-black p-3 rounded text-xs text-green-400 overflow-x-auto">{block.code}</pre>
                                                                 </div>
                                                             ))}
@@ -1765,7 +2672,7 @@
                                     <div className="flex justify-between items-end mb-6">
                                         <div>
                                             <h2 className="text-2xl font-bold text-slate-900">Live Webpage Simulation</h2>
-                                            <p className="text-slate-500 text-sm">See exactly how our AI agents will change your live product page.</p>
+                                            <p className="text-slate-500 text-sm">Preview based on scraped data from {mode1ProductCtx.url || urlInput || 'your URL'}.</p>
                                         </div>
                                         <button onClick={() => setView('SUCCESS')} className="px-5 py-2 bg-slate-900 text-white rounded-lg font-medium hover:bg-slate-800 flex items-center gap-2">
                                             <i className="ph ph-rocket-launch"></i> Approve & Deploy
@@ -1785,43 +2692,54 @@
                                             <div className="w-3 h-3 rounded-full bg-red-400"></div>
                                             <div className="w-3 h-3 rounded-full bg-yellow-400"></div>
                                             <div className="w-3 h-3 rounded-full bg-green-400"></div>
-                                            <div className="ml-4 bg-white px-3 py-1 rounded text-xs text-slate-400 w-1/2 flex items-center gap-2">
-                                                <i className="ph ph-lock"></i> {urlInput || 'https://yourbrand.com/product'}
+                                            <div className="ml-4 bg-white px-3 py-1 rounded text-xs text-slate-400 w-1/2 flex items-center gap-2 truncate">
+                                                <i className="ph ph-lock"></i> {mode1ProductCtx.url || urlInput || 'https://yourbrand.com/product'}
                                             </div>
                                         </div>
                                         <div className="p-8 flex gap-8">
                                             <div className="w-1/2 bg-slate-100 rounded-xl h-96 flex items-center justify-center overflow-hidden">
-                                                <img src="https://images.unsplash.com/photo-1542272604-787c3835535d?w=500&q=80" className="object-cover w-full h-full" alt="Product" />
-                                            </div>
-                                            <div className="w-1/2">
-                                                <h1 className="text-3xl font-bold mb-2">{autofixRpt.fixed_h1 || 'Premium Urban Denim'}</h1>
-                                                {previewToggle === 'OPTIMIZED' && (
-                                                    <div className="flex items-center gap-1 text-yellow-500 mb-4 animate-pulse">
-                                                        <i className="ph-fill ph-star"></i><i className="ph-fill ph-star"></i><i className="ph-fill ph-star"></i><i className="ph-fill ph-star"></i><i className="ph-fill ph-star-half"></i>
-                                                        <span className="text-xs text-slate-500 ml-2">(4.8/5 from 120 reviews)</span>
+                                                {mode1ProductCtx.imageUrl ? (
+                                                    <img src={mode1ProductCtx.imageUrl} className="object-cover w-full h-full" alt={mode1ProductCtx.productName} />
+                                                ) : (
+                                                    <div className="flex flex-col items-center justify-center text-slate-400 p-6 text-center">
+                                                        <i className="ph ph-image text-5xl mb-2"></i>
+                                                        <span className="text-xs">No product image found on this page</span>
                                                     </div>
                                                 )}
-                                                <p className="text-2xl font-semibold mb-6">$89.00</p>
+                                            </div>
+                                            <div className="w-1/2">
+                                                <h1 className="text-3xl font-bold mb-2">{previewToggle === 'OPTIMIZED' ? (autofixRpt.fixed_h1 || mode1ProductData.product_name || 'Product Title') : (mode1ProductData.product_name || 'Product Title')}</h1>
+                                                {(mode1ProductData.avg_rating || mode1ProductData.review_count) && (
+                                                    <div className="flex items-center gap-1 text-yellow-500 mb-4">
+                                                        <i className="ph-fill ph-star"></i>
+                                                        <span className="text-xs text-slate-500 ml-1">
+                                                            {mode1ProductData.avg_rating ? `${mode1ProductData.avg_rating}/5` : ''}
+                                                            {mode1ProductData.review_count ? ` · ${Number(mode1ProductData.review_count).toLocaleString()} ratings` : ''}
+                                                        </span>
+                                                    </div>
+                                                )}
+                                                <p className="text-2xl font-semibold mb-6">{formatProductPrice(mode1ProductData)}</p>
                                                 <p className="text-slate-600 text-sm mb-6">
                                                     {previewToggle === 'OPTIMIZED' && autofixRpt.rewritten_product_description
-                                                        ? autofixRpt.rewritten_product_description.slice(0, 150) + '...'
-                                                        : 'Standard fit cotton jeans. Good for everyday use.'}
+                                                        ? autofixRpt.rewritten_product_description.slice(0, 200) + '...'
+                                                        : (mode1ProductData.description ? mode1ProductData.description.slice(0, 200) + '...' : 'No description found on the page.')}
                                                 </p>
-                                                {previewToggle === 'OPTIMIZED' && (
+                                                {previewToggle === 'OPTIMIZED' && mode1ProductData.availability === 'LimitedAvailability' && (
                                                     <div className="bg-red-50 border border-red-200 text-red-600 px-3 py-2 rounded text-sm font-bold mb-4 flex items-center gap-2 fade-in">
-                                                        <i className="ph ph-fire"></i> High Demand: Only 2 left in stock!
+                                                        <i className="ph ph-fire"></i> Limited availability
                                                     </div>
                                                 )}
                                                 <button className={`w-full py-4 rounded-lg font-bold text-lg mb-6 transition-all ${previewToggle==='OPTIMIZED'?'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg hover:scale-105':'bg-slate-800 text-white'}`}>
-                                                    Add to Cart
+                                                    {mode1ProductData.above_fold_cta || 'Get Started'}
                                                 </button>
-                                                {previewToggle === 'OPTIMIZED' && (
+                                                {previewToggle === 'OPTIMIZED' && (contentRpt.faqs || []).length > 0 && (
                                                     <div className="border-t pt-4 mt-4 fade-in">
                                                         <h4 className="font-bold text-sm flex items-center gap-2"><i className="ph ph-robot text-indigo-500"></i> AI Answer Engine FAQs</h4>
-                                                        <div className="mt-2 text-xs text-slate-600 bg-slate-50 p-3 rounded border border-slate-100">
-                                                            <strong>Q: Is this breathable?</strong><br/>
-                                                            A: Yes, crafted with 100% breathable cotton denim.
-                                                        </div>
+                                                        {(contentRpt.faqs || []).slice(0, 2).map((faq, i) => (
+                                                            <div key={i} className="mt-2 text-xs text-slate-600 bg-slate-50 p-3 rounded border border-slate-100">
+                                                                <strong>Q: {faq.question}</strong><br/>A: {faq.answer}
+                                                            </div>
+                                                        ))}
                                                     </div>
                                                 )}
                                             </div>
@@ -1836,20 +2754,29 @@
                                     <div className="mb-8">
                                         <span className="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-bold mb-3 inline-block"><i className="ph ph-robot"></i> PDP Researcher Agent</span>
                                         <h2 className="text-2xl font-bold text-slate-900">High-Converting Layouts Found</h2>
-                                        <p className="text-slate-500">Based on your {businessData.region} {businessData.audience} market, our agent benchmarked these top styles.</p>
+                                        <p className="text-slate-500">Based on your {understanding.primary_markets?.[0] || brandCategory} market, our agent benchmarked these top styles.</p>
                                         {mode2Result?.blueprint_id && <p className="text-xs text-slate-400 mt-1 font-mono">Blueprint ID: {mode2Result.blueprint_id}</p>}
                                     </div>
 
                                     <div className="grid grid-cols-3 gap-6">
                                         {[
-                                            { title: competitorPats[0] || 'Competitor A (Minimalist)', desc: 'Image-heavy, low text. Zara inspired.', img: 'https://images.unsplash.com/photo-1541099649105-f69ad21f3246?w=400&q=80', recommended: false },
-                                            { title: competitorPats[1] || 'Competitor B (Trust-First)', desc: "Heavy reviews & material details. Levi's style.", img: 'https://images.unsplash.com/photo-1604176354204-9268737828e4?w=400&q=80', recommended: false },
-                                            { title: 'AI Hybrid Blueprint', desc: blueprint.copy_tone_guide?.slice(0, 80) || 'Combines AI-readability with visual storytelling.', img: 'https://images.unsplash.com/photo-1584865288642-42078afe6942?w=400&q=80', recommended: true }
+                                            { title: competitorSites[0]?.name || competitorPats[0] || 'Competitor A', desc: competitorSites[0]?.style || 'Image-heavy, low text.', siteUrl: competitorSites[0]?.url, recommended: false },
+                                            { title: competitorSites[1]?.name || competitorPats[1] || 'Competitor B', desc: competitorSites[1]?.style || 'Reviews & material details.', siteUrl: competitorSites[1]?.url, recommended: false },
+                                            { title: blueprint.blueprint_title || 'AI Hybrid Blueprint', desc: blueprint.copy_tone_guide?.slice(0, 80) || blueprint.executive_summary?.slice(0, 80) || 'Optimized for your product.', img: categoryImages[0], recommended: true }
                                         ].map((layout, i) => (
                                             <div key={i} onClick={() => setView('VISUALIZER_MODE2')} className={`p-4 rounded-xl border cursor-pointer shadow-sm group relative overflow-hidden ${layout.recommended ? 'bg-indigo-50 border-2 border-indigo-500 shadow-md' : 'bg-white border-slate-200 hover:border-indigo-400'}`}>
                                                 {layout.recommended && <div className="absolute top-0 right-0 bg-indigo-500 text-white text-[10px] font-bold px-2 py-1 rounded-bl-lg z-10">AI RECOMMENDED</div>}
-                                                <div className={`h-40 rounded-lg mb-4 overflow-hidden border ${layout.recommended ? 'bg-slate-900 border-indigo-200' : 'bg-slate-100 border-slate-200'}`}>
-                                                    <img src={layout.img} className={`w-full h-full object-cover group-hover:scale-110 transition-transform ${layout.recommended ? 'opacity-80 mix-blend-overlay' : ''}`} />
+                                                <div className={`h-48 rounded-lg mb-4 overflow-hidden border relative ${layout.recommended ? 'bg-slate-900 border-indigo-200' : 'bg-slate-100 border-slate-200'}`}>
+                                                    {layout.recommended ? (
+                                                        <img src={layout.img} className="w-full h-full object-cover opacity-90" alt={layout.title} />
+                                                    ) : layout.siteUrl && !layout.siteUrl.includes('google.com') ? (
+                                                        <>
+                                                            <iframe title={layout.title} src={layout.siteUrl} className="w-[400%] h-[400%] origin-top-left scale-[0.25] pointer-events-none border-0" sandbox="allow-scripts allow-same-origin" />
+                                                            <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] px-2 py-1 truncate">{layout.siteUrl.replace(/^https?:\/\//, '')}</div>
+                                                        </>
+                                                    ) : (
+                                                        <img src={sitePreviewUrl(layout.siteUrl) || categoryImages[i]} className="w-full h-full object-cover object-top" alt={layout.title} />
+                                                    )}
                                                 </div>
                                                 <h4 className={`font-bold ${layout.recommended ? 'text-indigo-900' : ''}`}>{layout.title}</h4>
                                                 <p className={`text-xs mt-1 ${layout.recommended ? 'text-indigo-700' : 'text-slate-500'}`}>{layout.desc}</p>
@@ -1889,40 +2816,46 @@
                                                 <div className="flex flex-col gap-8 max-w-3xl mx-auto">
                                                     <div className="flex gap-8">
                                                         <div className="w-1/2 space-y-3">
-                                                            <div className="rounded-lg overflow-hidden h-[360px] border border-slate-100 shadow-sm relative group">
-                                                                <img src="https://images.unsplash.com/photo-1584865288642-42078afe6942?w=500&q=80" className="w-full h-full object-cover transition-transform group-hover:scale-105" />
+                                                            <div className="rounded-lg overflow-hidden h-[360px] border border-slate-100 shadow-sm relative group" style={accentStyle}>
+                                                                <img src={categoryImages[selectedImageIdx] || categoryImages[0]} className="w-full h-full object-cover transition-transform group-hover:scale-105" alt={productTitle} />
                                                                 <div className="absolute top-3 left-3 bg-white/90 px-2 py-1 text-[10px] font-bold rounded shadow-sm text-slate-800 uppercase tracking-widest">Bestseller</div>
                                                             </div>
                                                             <div className="flex gap-3">
-                                                                <div className="h-16 w-16 bg-slate-100 rounded border-2 border-purple-400 overflow-hidden cursor-pointer"><img src="https://images.unsplash.com/photo-1584865288642-42078afe6942?w=100&q=80" className="w-full h-full object-cover" /></div>
-                                                                <div className="h-16 w-16 bg-slate-100 rounded border border-slate-200 overflow-hidden cursor-pointer opacity-60 hover:opacity-100 transition-opacity"><img src="https://images.unsplash.com/photo-1542272604-787c3835535d?w=100&q=80" className="w-full h-full object-cover" /></div>
-                                                                <div className="h-16 w-16 bg-slate-100 rounded border border-slate-200 overflow-hidden cursor-pointer opacity-60 hover:opacity-100 transition-opacity flex items-center justify-center text-slate-400"><i className="ph ph-play-circle text-2xl"></i></div>
+                                                                {categoryImages.slice(0, 4).map((img, idx) => (
+                                                                    <div key={idx} onClick={() => setSelectedImageIdx(idx)} className={`h-16 w-16 bg-slate-100 rounded border overflow-hidden cursor-pointer ${selectedImageIdx === idx ? 'border-2 border-purple-400' : 'border-slate-200 opacity-70 hover:opacity-100'}`}>
+                                                                        <img src={img} className="w-full h-full object-cover" alt={`Angle ${idx + 1}`} />
+                                                                    </div>
+                                                                ))}
                                                             </div>
                                                         </div>
                                                         <div className="w-1/2 flex flex-col pt-2">
                                                             <div className="flex justify-between items-start mb-2">
                                                                 <p className="text-xs font-bold text-purple-600 tracking-wider uppercase">{brandCategory}</p>
-                                                                <div className="flex items-center gap-1 text-yellow-400 text-xs font-bold"><i className="ph-fill ph-star"></i> 4.9 <span className="text-slate-400 font-normal underline cursor-pointer">(128 Reviews)</span></div>
+                                                                <div className="flex items-center gap-1 text-yellow-400 text-xs font-bold"><i className="ph-fill ph-star"></i> {pageEdits.rating || 4.8} <span className="text-slate-400 font-normal">({pageEdits.reviewCount || 128} Reviews)</span></div>
                                                             </div>
                                                             <h1 className="text-3xl font-extrabold mb-2 text-slate-900 leading-tight">{productTitle}</h1>
-                                                            <p className="text-2xl font-bold text-slate-800 mb-4">AED 299.00 <span className="text-sm text-slate-400 font-normal line-through ml-2">AED 399.00</span></p>
-                                                            <p className="text-slate-600 text-sm mb-6 leading-relaxed">{productDesc.slice(0, 180)}{productDesc.length > 180 ? '...' : ''}</p>
+                                                            <p className="text-2xl font-bold text-slate-800 mb-4">{understanding.price_positioning === 'premium' ? '₹2,499' : '₹1,299'} {pageEdits.showDiscount && <span className="text-sm text-slate-400 font-normal line-through ml-2">₹1,799</span>}</p>
+                                                            <p className="text-slate-600 text-sm mb-6 leading-relaxed">{productDesc.slice(0, 220)}{productDesc.length > 220 ? '...' : ''}</p>
                                                             <div className="mb-6">
                                                                 <div className="flex justify-between items-end mb-2">
                                                                     <p className="text-xs font-bold text-slate-700">Select Size</p>
                                                                     <p className="text-xs text-indigo-600 underline cursor-pointer">Size Guide</p>
                                                                 </div>
                                                                 <div className="flex gap-3">
-                                                                    <div className="w-10 h-10 rounded border border-slate-300 flex items-center justify-center text-sm cursor-pointer hover:border-slate-800">S</div>
-                                                                    <div className="w-10 h-10 rounded border-2 border-slate-900 flex items-center justify-center text-sm font-bold bg-slate-50 shadow-sm cursor-pointer">M</div>
-                                                                    <div className="w-10 h-10 rounded border border-slate-300 flex items-center justify-center text-sm cursor-pointer hover:border-slate-800">L</div>
-                                                                    <div className="w-10 h-10 rounded border border-slate-200 text-slate-300 flex items-center justify-center text-sm cursor-not-allowed line-through">XL</div>
+                                                                    {['S', 'M', 'L'].map(sz => (
+                                                                        <button key={sz} type="button" onClick={() => setSelectedSize(sz)} className={`w-10 h-10 rounded border flex items-center justify-center text-sm cursor-pointer ${selectedSize === sz ? 'border-2 border-slate-900 font-bold bg-slate-50 shadow-sm' : 'border-slate-300 hover:border-slate-800'}`}>{sz}</button>
+                                                                    ))}
                                                                 </div>
                                                             </div>
-                                                            {pageVersion > 1 && (
+                                                            {(pageEdits.sustainabilityNote || pageEdits.customNote) && (
                                                                 <div className="bg-purple-50 text-purple-800 p-3 rounded-lg text-xs border border-purple-200 mb-6 fade-in flex items-start gap-2 shadow-sm">
                                                                     <i className="ph ph-leaf font-bold mt-0.5 text-green-600"></i>
-                                                                    <span><strong>Sustainable Edition:</strong> Uses 40% less water in the wash process based on your brand requirements.</span>
+                                                                    <span>{pageEdits.sustainabilityNote || pageEdits.customNote}</span>
+                                                                </div>
+                                                            )}
+                                                            {pageEdits.reviewSnippet && (
+                                                                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4 text-xs text-slate-600">
+                                                                    <strong>New review:</strong> "{pageEdits.reviewSnippet}"
                                                                 </div>
                                                             )}
                                                             <button className="w-full bg-slate-900 text-white py-4 rounded-xl font-bold text-lg mb-4 shadow-lg hover:bg-slate-800 hover:-translate-y-0.5 transition-all">{ctaText}</button>
@@ -1936,13 +2869,23 @@
                                                     <div className="border-t border-slate-200 pt-8 mt-2 pb-10">
                                                         <h3 className="text-xl font-bold text-slate-800 mb-6">Product Details</h3>
                                                         <div className="space-y-4">
-                                                            <div className="border border-slate-200 rounded-xl p-4 flex justify-between items-center cursor-pointer hover:bg-slate-50 transition-colors">
-                                                                <span className="font-semibold text-slate-700 flex items-center gap-2"><i className="ph ph-t-shirt text-slate-400 text-lg"></i> Material & Care Instructions</span>
-                                                                <i className="ph ph-caret-down text-slate-400"></i>
+                                                            <div className="border border-slate-200 rounded-xl overflow-hidden">
+                                                                <button type="button" onClick={() => setOpenAccordion(openAccordion === 'material' ? null : 'material')} className="w-full p-4 flex justify-between items-center cursor-pointer hover:bg-slate-50 transition-colors text-left">
+                                                                    <span className="font-semibold text-slate-700 flex items-center gap-2"><i className="ph ph-t-shirt text-slate-400 text-lg"></i> Material & Care Instructions</span>
+                                                                    <i className={`ph ph-caret-down text-slate-400 transition-transform ${openAccordion === 'material' ? 'rotate-180' : ''}`}></i>
+                                                                </button>
+                                                                {openAccordion === 'material' && (
+                                                                    <div className="px-4 pb-4 text-sm text-slate-600 leading-relaxed border-t border-slate-100 bg-slate-50/50">{materialContent}</div>
+                                                                )}
                                                             </div>
-                                                            <div className="border border-slate-200 rounded-xl p-4 flex justify-between items-center cursor-pointer hover:bg-slate-50 transition-colors">
-                                                                <span className="font-semibold text-slate-700 flex items-center gap-2"><i className="ph ph-arrows-out text-slate-400 text-lg"></i> Fit & Dimensions</span>
-                                                                <i className="ph ph-caret-down text-slate-400"></i>
+                                                            <div className="border border-slate-200 rounded-xl overflow-hidden">
+                                                                <button type="button" onClick={() => setOpenAccordion(openAccordion === 'fit' ? null : 'fit')} className="w-full p-4 flex justify-between items-center cursor-pointer hover:bg-slate-50 transition-colors text-left">
+                                                                    <span className="font-semibold text-slate-700 flex items-center gap-2"><i className="ph ph-arrows-out text-slate-400 text-lg"></i> Fit & Dimensions</span>
+                                                                    <i className={`ph ph-caret-down text-slate-400 transition-transform ${openAccordion === 'fit' ? 'rotate-180' : ''}`}></i>
+                                                                </button>
+                                                                {openAccordion === 'fit' && (
+                                                                    <div className="px-4 pb-4 text-sm text-slate-600 leading-relaxed border-t border-slate-100 bg-slate-50/50">{fitContent}</div>
+                                                                )}
                                                             </div>
                                                             <div className="border-2 border-indigo-100 bg-indigo-50/40 rounded-xl p-5 shadow-sm mt-4">
                                                                 <div className="flex items-center justify-between mb-3 border-b border-indigo-100 pb-3">
@@ -1953,8 +2896,13 @@
                                                                     <span className="text-[10px] bg-indigo-100 text-indigo-600 px-2 py-1 rounded font-bold uppercase tracking-wider">Optimized for ChatGPT</span>
                                                                 </div>
                                                                 <p className="text-sm text-slate-700">
-                                                                    <strong>Q: Are these products suitable for {businessData.region}?</strong><br/>
-                                                                    A: {productDesc.slice(0, 120) || 'Yes, specifically engineered for the local climate and lifestyle.'}
+                                                                    {pageEdits.extraFaq ? (
+                                                                        <><strong>Q: {pageEdits.extraFaq.q}</strong><br/>A: {pageEdits.extraFaq.a}</>
+                                                                    ) : blueprintFaqs.length > 0 ? (
+                                                                        <><strong>Q: {blueprintFaqs[0].question || blueprintFaqs[0]}</strong><br/>A: {blueprintFaqs[0].answer || blueprintFaqs[0]}</>
+                                                                    ) : (
+                                                                        <><strong>Q: Is this suitable for {understanding.primary_markets?.[0] || 'your market'}?</strong><br/>A: {productDesc.slice(0, 120) || 'Yes — designed for your target customers with premium quality and easy returns.'}</>
+                                                                    )}
                                                                 </p>
                                                             </div>
                                                         </div>

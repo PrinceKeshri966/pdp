@@ -4,7 +4,7 @@
     "meaning": "CTA means Call-to-Action — a short line that tells the visitor what to do next, like 'Shop Now' or 'Free Shipping'. In meta description, it appears under your title on Google.",
     "ok": "Your meta description encourages clicks with a clear action (Shop Now, Free shipping, etc.).",
     "fail": "Google shows your page with plain text — no reason for shoppers to click from search results.",
-    "fix": "Add one action line in meta description, e.g. \"Shop premium jeans today — Free shipping on orders above ₹999.\""
+    "fix": "Add one action line in meta description, e.g. \"Shop {product_name} today — Free shipping on orders above ₹999.\""
   },
   "headings_logical_hierarchy": {
     "term": "Logical Hierarchy",
@@ -15,24 +15,24 @@
   },
   "headings_keywords": {
     "term": "Keywords in Headings",
-    "meaning": "Your target search words (e.g. 'men's jeans') should appear naturally in H2/H3 section headings — not stuffed, but clearly present.",
+    "meaning": "Your target search words (e.g. your main product category) should appear naturally in H2/H3 section headings — not stuffed, but clearly present.",
     "ok": "Your main search terms appear in H2/H3 headings — helps ranking for those queries.",
     "fail": "Headings don't include your target keywords — you miss SEO signals in subheadings.",
-    "fix": "Add natural keyword phrases in section headings, e.g. \"Men's Slim Fit Jeans — Fabric & Fit\"."
+    "fix": "Add natural keyword phrases in section headings, e.g. \"{product_name} — Details & Features\"."
   },
   "kw_in_title": {
     "term": "In Title",
     "meaning": "The title tag is the blue clickable headline on Google. Your main keyword should appear here so Google knows what the page is about.",
     "ok": "Your main keyword appears in the page title shown on Google.",
     "fail": "Title tag doesn't include your primary keyword — harder to rank for that search term.",
-    "fix": "Put brand + primary keyword first in title, e.g. \"Killer Jeans | Men's Slim Fit Blue Denim\"."
+    "fix": "Put brand + primary keyword first in title, e.g. \"{brand} | {product_name}\"."
   },
   "kw_in_h1": {
     "term": "In H1",
     "meaning": "H1 is the biggest heading visible on the page. It should include your primary keyword because Google treats it as the main topic of the page.",
     "ok": "The main heading on the page includes your target keyword.",
     "fail": "H1 doesn't match what people search for — Google may not know this page's main topic.",
-    "fix": "Make H1 the product name + key attribute, e.g. \"Men's Slim Fit Stretch Jeans — Dark Blue\"."
+    "fix": "Make H1 the product name + key attribute, e.g. \"{product_name}\"."
   },
   "kw_in_meta": {
     "term": "In Meta",
@@ -137,7 +137,7 @@
     "meaning": "Content written the way people ask questions — 'Do these shrink after wash?' — performs better in voice search and AI answers.",
     "ok": "Content answers questions naturally — good for voice search and AI answers.",
     "fail": "Reads like a spec sheet only — misses how real shoppers ask questions.",
-    "fix": "Add FAQ-style sentences: \"Will these jeans shrink after wash?\" with a direct answer."
+    "fix": "Add FAQ-style sentences about {product_name} with a direct answer."
   },
   "aeo_llm_snippet": {
     "term": "LLM Snippet Ready",
@@ -365,7 +365,7 @@
   },
   "schema_breadcrumb": {
     "term": "Breadcrumb schema",
-    "meaning": "Breadcrumb shows path like Home > Men > Jeans. Schema helps Google display it in search.",
+    "meaning": "Breadcrumb shows path like Home › Category › Product. Schema helps Google display it in search.",
     "ok": "Breadcrumb schema helps Google show your category path.",
     "fail": "No breadcrumb schema — missed context in search.",
     "fix": "Add BreadcrumbList JSON-LD matching your visible breadcrumb."

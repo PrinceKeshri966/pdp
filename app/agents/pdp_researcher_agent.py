@@ -15,7 +15,7 @@ import json
 import time
 
 from app.agents.claude_client import claude
-from app.agents.json_utils import safe_json_parse
+from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
 from app.agents.state import AgentState, state_dict
 from app.core.logging import get_logger
@@ -84,7 +84,7 @@ async def pdp_researcher_agent(state: AgentState) -> AgentState:
 
     response = await claude.messages.create(
         model=_MODEL,
-        max_tokens=8192,
+        max_tokens=3000,
         system=_SYSTEM_PROMPT,
         messages=[
             {
@@ -101,7 +101,11 @@ async def pdp_researcher_agent(state: AgentState) -> AgentState:
     raw = response.content[0].text.strip()
     duration_ms = int((time.monotonic() - t0) * 1000)
 
-    research = safe_json_parse(raw)
+    research, parse_err = safe_json_parse_report(raw, "pdp_researcher_agent")
+    if parse_err:
+        state["errors"] = state.get("errors", []) + [parse_err]
+        state["status"] = "failed"
+        return state
 
     logger.info("pdp_researcher_agent.done", duration_ms=duration_ms)
 

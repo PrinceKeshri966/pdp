@@ -32,6 +32,10 @@ class AgentState(TypedDict, total=False):
 
     # ── Mode 2 inputs ─────────────────────────────────────────────────────────
     business_input: Optional[str]
+    # Uploaded file text to help Mode 2 (chat/file uploads)
+    uploaded_context: Optional[str]
+    # Chat history for Mode 2 interactive chat (sequence of messages)
+    chat_history: Optional[list[dict[str, Any]]]
 
     # ── Phase 1: Scraper output ───────────────────────────────────────────────
     markdown_content: Optional[str]

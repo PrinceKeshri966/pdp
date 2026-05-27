@@ -77,6 +77,7 @@ class AnalyzeBusinessResponse(BaseModel):
     blueprint_id: UUID
     status: str
     title: str | None = None
+    business_input: str | None = None
     business_understanding: dict[str, Any] = {}
     pdp_research: dict[str, Any] = {}
     final_blueprint: dict[str, Any] = {}

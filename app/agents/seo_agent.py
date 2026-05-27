@@ -16,7 +16,7 @@ import time
 from app.agents.claude_client import claude
 from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
-from app.agents.state import AgentState
+from app.agents.state import AgentState, state_dict
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -129,12 +129,15 @@ async def seo_agent(state: AgentState) -> AgentState:
     if not markdown:
         return {"errors": ["seo_agent: no markdown_content"]}
 
+    structured = state_dict(state, "json_structured_data")
+
     logger.info("seo_agent.start", model=_MODEL, chars=len(markdown))
     t0 = time.monotonic()
 
     user_message = (
-        f"Analyse this product page Markdown for SEO:\n\n{markdown[:8000]}"
-    )  # cap to stay within context
+        f"Product structured data:\n{json.dumps(structured, indent=2)}\n\n"
+        f"Raw page Markdown (for tag/heading analysis):\n{markdown[:6000]}"
+    )
 
     response = await claude.messages.create(
         model=_MODEL,

@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     # ── Jina Reader ──────────────────────────────────────────────────────────
     jina_api_key: str = ""
 
+    # ── Firecrawl ──────────────────────────────────────────────────────────────────────────────────
+    firecrawl_api_key: str = ""
+
     # ── CORS ─────────────────────────────────────────────────────────────────
     allowed_origins: str = "http://localhost:3000,http://localhost:8000,http://127.0.0.1:8000"
 

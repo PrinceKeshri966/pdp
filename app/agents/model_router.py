@@ -25,6 +25,10 @@ _AGENT_MODEL_MAP: dict[str, str] = {
 
     # ── Haiku (Claude 4.5 Haiku) ──────────────────────────────────────────────
     "seo":                   _settings.model_haiku,
+    "aeo":                   _settings.model_haiku,
+    "ux":                    _settings.model_haiku,
+    "psychology":            _settings.model_haiku,
+    "competitor":            _settings.model_haiku,
     "scraper_parser":        _settings.model_haiku,
     "chat_interface":        _settings.model_haiku,
     "pdp_researcher":        _settings.model_haiku,

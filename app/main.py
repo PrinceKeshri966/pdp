@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.api.routes import analyze, auth, reports
+from app.api.routes import analyze, auth, chat, reports
 from app.core.config import get_settings
 from app.core.database import init_db
 from app.core.logging import get_logger, setup_logging
@@ -72,6 +72,7 @@ def create_app() -> FastAPI:
 
     # ── Routers ───────────────────────────────────────────────────────────────
     app.include_router(analyze.router, prefix="/api/v1")
+    app.include_router(chat.router, prefix="/api/v1")
     app.include_router(auth.router, prefix="/api/v1")
     app.include_router(reports.router, prefix="/api/v1")
 

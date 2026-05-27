@@ -38,6 +38,7 @@ from app.agents.psychology_agent import psychology_agent
 from app.agents.prioritization_agent import prioritization_agent
 from app.agents.autofix_agent import autofix_agent
 from app.agents.content_gen_agent import content_gen_agent
+from app.agents.pipeline_stream import MODE1_PIPELINE, stream_graph_progress
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -46,6 +47,13 @@ logger = get_logger(__name__)
 # ── Guard: abort graph on hard failure ────────────────────────────────────────
 def _should_continue(state: AgentState) -> str:
     return "continue" if state.get("status") != "failed" else "abort"
+
+
+def _route_extractor(state: AgentState) -> list[str] | str:
+    """Conditionally fan-out to all 5 agents, or abort if failed."""
+    if state.get("status") == "failed":
+        return END
+    return ["seo", "aeo", "ux", "competitor", "psychology"]
 
 
 # ── Build the graph ───────────────────────────────────────────────────────────
@@ -81,19 +89,7 @@ def build_mode1_graph() -> StateGraph:
     )
 
     # ── Phase 2: Fan-Out (extractor → all 5 analysis agents in parallel) ──────
-    graph.add_conditional_edges(
-        "extractor",
-        _should_continue,
-        {
-            "continue": "seo",
-            "abort": END,
-        },
-    )
-    # LangGraph parallel edges — all 5 run simultaneously
-    graph.add_edge("extractor", "aeo")
-    graph.add_edge("extractor", "ux")
-    graph.add_edge("extractor", "competitor")
-    graph.add_edge("extractor", "psychology")
+    graph.add_conditional_edges("extractor", _route_extractor)
 
     # ── Phase 3: Fan-In (all 5 → prioritization) ─────────────────────────────
     graph.add_edge("seo", "prioritization")
@@ -117,6 +113,57 @@ def build_mode1_graph() -> StateGraph:
 _mode1_graph = build_mode1_graph().compile()
 
 
+def build_mode1_initial_state(
+    url: str,
+    tenant_id: str,
+    user_id: str,
+    competitor_urls: list[str] | None = None,
+) -> AgentState:
+    return {
+        "url": url,
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "competitor_urls": competitor_urls or [],
+        "agent_reports": [],
+        "errors": [],
+        "status": "running",
+        "markdown_content": None,
+        "scraper_method": None,
+        "json_structured_data": None,
+        "seo_report": None,
+        "aeo_report": None,
+        "ux_report": None,
+        "competitor_report": None,
+        "psychology_report": None,
+        "final_diagnosis": None,
+        "autofix_report": None,
+        "generated_content": None,
+        "business_input": None,
+        "business_understanding": None,
+        "pdp_research": None,
+        "final_blueprint": None,
+    }
+
+
+async def stream_mode1(
+    url: str,
+    tenant_id: str,
+    user_id: str,
+    competitor_urls: list[str] | None = None,
+):
+    initial_state = build_mode1_initial_state(url, tenant_id, user_id, competitor_urls)
+    logger.info("mode1.start", url=url, tenant_id=tenant_id)
+    async for event, state in stream_graph_progress(_mode1_graph, initial_state, MODE1_PIPELINE):
+        if event["type"] == "done":
+            logger.info(
+                "mode1.done",
+                status=state.get("status"),
+                agents_ran=len(state.get("agent_reports", [])),
+                health_score=(state.get("final_diagnosis") or {}).get("overall_health_score"),
+            )
+        yield event, state
+
+
 async def run_mode1(
     url: str,
     tenant_id: str,
@@ -133,35 +180,7 @@ async def run_mode1(
     user_id          : UUID string of the requesting user.
     competitor_urls  : Optional list of up to 2 competitor URLs (user-provided).
     """
-    initial_state: AgentState = {
-        "url": url,
-        "tenant_id": tenant_id,
-        "user_id": user_id,
-        "competitor_urls": competitor_urls or [],
-        "agent_reports": [],
-        "errors": [],
-        "status": "running",
-        # Phase 1
-        "markdown_content": None,
-        "scraper_method": None,
-        "json_structured_data": None,
-        # Phase 2
-        "seo_report": None,
-        "aeo_report": None,
-        "ux_report": None,
-        "competitor_report": None,
-        "psychology_report": None,
-        # Phase 3
-        "final_diagnosis": None,
-        # Phase 4
-        "autofix_report": None,
-        "generated_content": None,
-        # Mode 2 fields unused in Mode 1
-        "business_input": None,
-        "business_understanding": None,
-        "pdp_research": None,
-        "final_blueprint": None,
-    }
+    initial_state = build_mode1_initial_state(url, tenant_id, user_id, competitor_urls)
 
     logger.info("mode1.start", url=url, tenant_id=tenant_id)
     final_state: AgentState = await _mode1_graph.ainvoke(initial_state)  # type: ignore[assignment]
