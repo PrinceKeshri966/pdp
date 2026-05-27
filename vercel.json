@@ -1,16 +1,4 @@
 {
-  "version": 2,
-  "framework": null,
-  "buildCommand": "python scripts/vercel_build_config.py && cp frontend/index.html public/index.html",
-  "installCommand": "pip install -r requirements-vercel.txt",
-  "builds": [
-    { "src": "api/index.py", "use": "@vercel/python" },
-    { "src": "public/**", "use": "@vercel/static" }
-  ],
-  "routes": [
-    { "src": "/health", "dest": "api/index.py" },
-    { "src": "/api/(.*)", "dest": "api/index.py" },
-    { "handle": "filesystem" },
-    { "src": "/(.*)", "dest": "/index.html" }
-  ]
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "pip install -r requirements-vercel.txt"
 }

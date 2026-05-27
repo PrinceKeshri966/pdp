@@ -10,13 +10,13 @@ Repo: https://github.com/PrinceKeshri966/PDP-DEV
 
 1. Go to [vercel.com](https://vercel.com) → **Add New** → **Project**
 2. Import **PrinceKeshri966/PDP-DEV**
-3. **Critical settings** (override defaults):
-   - Framework Preset: **Other**
-   - Root Directory: **.** (leave empty — repo root)
-   - Build Command: **leave empty** (uses `vercel.json`)
-   - Output Directory: **leave empty** — do NOT set to `public` (that disables the Python API)
-   - Turn **OFF** any dashboard overrides that conflict with `vercel.json`
-4. Click **Deploy**
+3. **Critical settings**:
+   - Framework Preset: **FastAPI** (auto-detected from `pyproject.toml`) or **Other**
+   - Root Directory: **empty**
+   - Build Command: **empty** (uses `pyproject.toml` → `[tool.vercel.scripts] build`)
+   - Output Directory: **empty** — never set to `public`
+   - Install Command: `pip install -r requirements-vercel.txt` (or leave empty if set in `vercel.json`)
+4. Add all env vars (see below), then **Deploy**
 
 ## 3. Environment variables
 

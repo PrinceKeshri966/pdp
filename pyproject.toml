@@ -1,0 +1,10 @@
+[project]
+name = "optipdp"
+version = "1.0.0"
+requires-python = ">=3.11"
+
+[tool.vercel]
+entrypoint = "app.main:app"
+
+[tool.vercel.scripts]
+build = "python scripts/vercel_build_config.py && cp frontend/index.html public/index.html"
