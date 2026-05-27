@@ -15,8 +15,8 @@ from app.main import app as fastapi_app  # noqa: E402
 try:
     from mangum import Mangum
 
-    handler = Mangum(fastapi_app, lifespan="on")
-    app = handler  # Vercel @vercel/python looks for `app` ASGI export
+    handler = Mangum(fastapi_app, lifespan="auto")
+    app = handler
 except ImportError:  # pragma: no cover
     handler = fastapi_app
     app = fastapi_app

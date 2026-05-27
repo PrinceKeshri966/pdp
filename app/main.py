@@ -4,6 +4,7 @@ FastAPI application factory – registers routers, lifespan, middleware.
 """
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
@@ -30,19 +31,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("startup.begin", app=settings.app_name, env=settings.app_env)
     try:
         await init_db()
+        logger.info("startup.db_ready")
     except Exception as exc:
         err = str(exc).lower()
         if "password authentication failed" in err or "invalidpassword" in type(exc).__name__.lower():
             logger.error(
                 "startup.db_failed",
                 hint=(
-                    "DATABASE_URL on Render is wrong. Copy fresh connection string from Neon, "
-                    "change postgresql:// to postgresql+asyncpg://, add ?ssl=require, "
-                    "paste in Render Environment (no quotes)."
+                    "DATABASE_URL is wrong. Copy fresh connection string from Neon, "
+                    "change postgresql:// to postgresql+asyncpg://, add ?ssl=require."
                 ),
             )
-        raise
-    logger.info("startup.db_ready")
+        else:
+            logger.error("startup.db_failed", error=str(exc))
+        # On Vercel/serverless: still serve /health and static UI; DB routes fail gracefully
+        if os.getenv("VERCEL") != "1":
+            raise
     yield
     logger.info("shutdown.begin")
 

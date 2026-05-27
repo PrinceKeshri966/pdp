@@ -2,6 +2,7 @@
 app/core/database.py
 Async SQLAlchemy engine, session factory, and Base declarative class.
 """
+import os
 from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import (
@@ -10,18 +11,24 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 
 settings = get_settings()
 
+_is_serverless = os.getenv("VERCEL") == "1" or os.getenv("AWS_LAMBDA_FUNCTION_NAME")
+
 # ── Engine ────────────────────────────────────────────────────────────────────
 engine = create_async_engine(
     settings.database_url,
-    echo=settings.debug,           # SQL logging in dev
+    echo=settings.debug,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    **(
+        {"poolclass": NullPool}
+        if _is_serverless
+        else {"pool_size": 10, "max_overflow": 20}
+    ),
 )
 
 # ── Session factory ───────────────────────────────────────────────────────────
