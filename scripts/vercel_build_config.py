@@ -39,3 +39,10 @@ config = {
 
 (PUBLIC / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
 print("Wrote public/config.json", config)
+
+# Copy SPA into public/ for Vercel static + FastAPI fallback
+frontend = ROOT / "frontend" / "index.html"
+public_index = PUBLIC / "index.html"
+if frontend.is_file():
+    public_index.write_text(frontend.read_text(encoding="utf-8"), encoding="utf-8")
+    print("Wrote public/index.html")

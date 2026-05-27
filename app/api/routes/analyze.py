@@ -37,8 +37,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.mode1_graph import run_mode1, stream_mode1
-from app.agents.mode2_graph import run_mode2, stream_mode2
 from app.api.dependencies import get_db_tenant, get_db_user
 from app.core.database import AsyncSessionLocal, get_db
 from app.models.analysis_report import AnalysisReport
@@ -53,6 +51,18 @@ from app.schemas.analyze import (
 )
 
 router = APIRouter(prefix="/analyze", tags=["Analyze"])
+
+
+def _mode1_runners():
+    from app.agents.mode1_graph import run_mode1, stream_mode1
+
+    return run_mode1, stream_mode1
+
+
+def _mode2_runners():
+    from app.agents.mode2_graph import run_mode2, stream_mode2
+
+    return run_mode2, stream_mode2
 
 
 def _pipeline_http_error(exc: Exception) -> HTTPException:
@@ -234,6 +244,7 @@ async def analyze_pdp(
     db.add(report)
     await db.flush()
 
+    run_mode1, _ = _mode1_runners()
     try:
         final_state = await run_mode1(
             url=body.url,
@@ -267,6 +278,8 @@ async def analyze_pdp_stream(
         tenant.id, db_user.id, body.url, body.competitor_urls
     )
     report_id_str = str(report_id)
+
+    _, stream_mode1 = _mode1_runners()
 
     async def event_generator() -> AsyncIterator[str]:
         final_state: dict = {}
@@ -324,6 +337,7 @@ async def analyze_business(
     db.add(blueprint)
     await db.flush()
 
+    run_mode2, _ = _mode2_runners()
     try:
         final_state = await run_mode2(
             business_input=body.business_input,
@@ -354,6 +368,8 @@ async def analyze_business_stream(
 ) -> StreamingResponse:
     blueprint_id = await _create_running_blueprint(tenant.id, db_user.id, body.business_input)
     blueprint_id_str = str(blueprint_id)
+
+    _, stream_mode2 = _mode2_runners()
 
     async def event_generator() -> AsyncIterator[str]:
         final_state: dict = {}

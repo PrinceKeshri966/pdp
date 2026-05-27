@@ -18,7 +18,9 @@ from app.core.config import get_settings
 from app.core.database import init_db
 from app.core.logging import get_logger, setup_logging
 
-_FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
+_ROOT_DIR = Path(__file__).parent.parent
+_FRONTEND_DIR = _ROOT_DIR / "frontend"
+_PUBLIC_DIR = _ROOT_DIR / "public"
 
 settings = get_settings()
 setup_logging()
@@ -29,23 +31,24 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("startup.begin", app=settings.app_name, env=settings.app_env)
-    try:
-        await init_db()
-        logger.info("startup.db_ready")
-    except Exception as exc:
-        err = str(exc).lower()
-        if "password authentication failed" in err or "invalidpassword" in type(exc).__name__.lower():
-            logger.error(
-                "startup.db_failed",
-                hint=(
-                    "DATABASE_URL is wrong. Copy fresh connection string from Neon, "
-                    "change postgresql:// to postgresql+asyncpg://, add ?ssl=require."
-                ),
-            )
-        else:
-            logger.error("startup.db_failed", error=str(exc))
-        # On Vercel/serverless: still serve /health and static UI; DB routes fail gracefully
-        if os.getenv("VERCEL") != "1":
+    if os.getenv("VERCEL") == "1":
+        logger.info("startup.skip_db_init", reason="vercel_serverless")
+    else:
+        try:
+            await init_db()
+            logger.info("startup.db_ready")
+        except Exception as exc:
+            err = str(exc).lower()
+            if "password authentication failed" in err or "invalidpassword" in type(exc).__name__.lower():
+                logger.error(
+                    "startup.db_failed",
+                    hint=(
+                        "DATABASE_URL is wrong. Copy fresh connection string from Neon, "
+                        "change postgresql:// to postgresql+asyncpg://, add ?ssl=require."
+                    ),
+                )
+            else:
+                logger.error("startup.db_failed", error=str(exc))
             raise
     yield
     logger.info("shutdown.begin")
@@ -112,6 +115,10 @@ def create_app() -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     async def serve_frontend() -> FileResponse:
+        if os.getenv("VERCEL") == "1":
+            index = _PUBLIC_DIR / "index.html"
+            if index.is_file():
+                return FileResponse(index)
         return FileResponse(_FRONTEND_DIR / "index.html")
 
     return app

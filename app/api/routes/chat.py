@@ -8,8 +8,6 @@ from __future__ import annotations
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 
-from app.utils.file_parser import extract_text_from_file
-
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
 
@@ -41,6 +39,8 @@ async def chat_message(body: ChatMessageRequest) -> dict[str, str]:
 
 @router.post("/upload", status_code=status.HTTP_200_OK, summary="Upload a file and extract text for chat")
 async def chat_upload_file(file: UploadFile = File(...)) -> dict[str, str]:
+    from app.utils.file_parser import extract_text_from_file
+
     try:
         content = await file.read()
         text = await extract_text_from_file(content, file.filename or "upload")

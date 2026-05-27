@@ -10,12 +10,12 @@ Repo: https://github.com/PrinceKeshri966/PDP-DEV
 
 1. Go to [vercel.com](https://vercel.com) → **Add New** → **Project**
 2. Import **PrinceKeshri966/PDP-DEV**
-3. **Critical settings**:
-   - Framework Preset: **FastAPI** (auto-detected from `pyproject.toml`) or **Other**
+3. **Critical settings** (Project → Settings → General → Build & Development):
+   - Framework Preset: **FastAPI** (auto from `pyproject.toml`) — not "Other" with Output Directory
    - Root Directory: **empty**
    - Build Command: **empty** (uses `pyproject.toml` → `[tool.vercel.scripts] build`)
-   - Output Directory: **empty** — never set to `public`
-   - Install Command: `pip install -r requirements-vercel.txt` (or leave empty if set in `vercel.json`)
+   - Output Directory: **empty** — if this is `public`, API routes return **404** and Python is not deployed
+   - Install Command: **empty** (deps come from `pyproject.toml`)
 4. Add all env vars (see below), then **Deploy**
 
 ## 3. Environment variables
@@ -59,9 +59,18 @@ vercel --prod
 
 ## 6. Verify
 
-- `https://YOUR-PROJECT.vercel.app` → OptiPDP UI
 - `https://YOUR-PROJECT.vercel.app/health` → `{"status":"ok"}`
-- Sign in with Google → run a short test
+- `https://YOUR-PROJECT.vercel.app/api/v1/config` → `{"auth_provider":"google",...}`
+- `https://YOUR-PROJECT.vercel.app/config.json` → static fallback (same shape)
+- `https://YOUR-PROJECT.vercel.app` → OptiPDP UI with **Sign in with Google**
+
+### If you see 404 NOT_FOUND on `/api/v1/config`
+
+Output Directory is set to `public` in the Vercel dashboard. Clear it, redeploy.
+
+### If you see 500 FUNCTION_INVOCATION_FAILED
+
+Check **Deployments → Functions → Logs**. Usually missing env vars or a cold-start import error. Redeploy after the latest push (lazy imports + skip DB init on Vercel).
 
 ## Limits on Vercel
 
