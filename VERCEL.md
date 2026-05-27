@@ -14,7 +14,7 @@ Repo: https://github.com/PrinceKeshri966/PDP-DEV
    - Framework Preset: **Other**
    - Root Directory: **.** (leave empty — repo root)
    - Build Command: **leave empty** (uses `vercel.json`)
-   - Output Directory: **public** (or leave empty if `vercel.json` sets it)
+   - Output Directory: **leave empty** — do NOT set to `public` (that disables the Python API)
    - Turn **OFF** any dashboard overrides that conflict with `vercel.json`
 4. Click **Deploy**
 

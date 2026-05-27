@@ -3003,8 +3003,15 @@
             }
 
             try {
+                let config = null;
                 const resp = await fetch('/api/v1/config');
-                const config = resp.ok ? await resp.json() : null;
+                if (resp.ok) {
+                    config = await resp.json();
+                }
+                if (!config) {
+                    const fb = await fetch('/config.json');
+                    if (fb.ok) config = await fb.json();
+                }
 
                 if (!config) {
                     needsSignIn = true;

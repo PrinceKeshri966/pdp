@@ -1,0 +1,6 @@
+{
+  "auth_provider": "google",
+  "auth_required": true,
+  "clerk_publishable_key": "pk_test_dummy_local_dev_only",
+  "google_login_url": "/api/v1/auth/google/login"
+}
