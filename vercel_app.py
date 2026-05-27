@@ -1,0 +1,84 @@
+"""
+Lightweight FastAPI entry for Vercel serverless.
+API routers register lazily so /health and /api/v1/config work even if
+optional deps fail during cold start.
+"""
+from __future__ import annotations
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from app.core.config import get_settings
+
+settings = get_settings()
+
+app = FastAPI(
+    title=settings.app_name,
+    version="1.0.0",
+    docs_url=None,
+    redoc_url=None,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+_routers_loaded = False
+
+
+def _load_routers() -> None:
+    global _routers_loaded
+    if _routers_loaded:
+        return
+    from app.api.routes import analyze, auth, chat, reports
+
+    app.include_router(analyze.router, prefix="/api/v1")
+    app.include_router(chat.router, prefix="/api/v1")
+    app.include_router(auth.router, prefix="/api/v1")
+    app.include_router(reports.router, prefix="/api/v1")
+    _routers_loaded = True
+
+
+try:
+    _load_routers()
+except Exception:
+    pass
+
+
+def _auth_provider() -> str:
+    if settings.google_enabled:
+        return "google"
+    if settings.clerk_enabled:
+        return "clerk"
+    return "none"
+
+
+@app.get("/health", tags=["Health"])
+async def health() -> dict[str, str]:
+    return {"status": "ok", "app": settings.app_name}
+
+
+@app.get("/api/v1/config", tags=["Config"])
+async def frontend_config() -> dict[str, str | bool]:
+    provider = _auth_provider()
+    return {
+        "clerk_publishable_key": settings.clerk_publishable_key,
+        "auth_provider": provider,
+        "google_login_url": "/api/v1/auth/google/login",
+        "auth_required": provider != "none"
+        or not (settings.dev_auth_bypass and settings.app_env == "development"),
+    }
+
+
+@app.get("/api/v1/glossary/checks", tags=["Config"])
+async def check_glossary() -> JSONResponse:
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent / "frontend" / "check_glossary.json"
+    return JSONResponse(content=json.loads(path.read_text(encoding="utf-8")))
