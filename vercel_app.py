@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.core.config import get_settings
 
@@ -102,6 +102,11 @@ async def frontend_config() -> dict[str, str | bool]:
         "auth_required": provider != "none"
         or not (settings.dev_auth_bypass and settings.app_env == "development"),
     }
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    return RedirectResponse("/index.html", status_code=307)
 
 
 @app.get("/api/v1/glossary/checks", tags=["Config"])
