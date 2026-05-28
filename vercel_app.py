@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.core.config import get_settings
+from app.core.playwright_env import playwright_enabled
 
 settings = get_settings()
 
@@ -41,6 +42,7 @@ def _load_routers() -> None:
         _load_reports,
         _load_chat,
         _load_analyze,
+        _load_screenshot,
     ):
         try:
             loader()
@@ -73,6 +75,12 @@ def _load_analyze() -> None:
     app.include_router(analyze.router, prefix="/api/v1")
 
 
+def _load_screenshot() -> None:
+    from app.api.routes import screenshot
+
+    app.include_router(screenshot.router, prefix="/api/v1")
+
+
 try:
     _load_routers()
 except Exception:
@@ -101,6 +109,7 @@ async def frontend_config() -> dict[str, str | bool]:
         "google_login_url": "/api/v1/auth/google/login",
         "auth_required": provider != "none"
         or not (settings.dev_auth_bypass and settings.app_env == "development"),
+        "screenshot_available": playwright_enabled(),
     }
 
 

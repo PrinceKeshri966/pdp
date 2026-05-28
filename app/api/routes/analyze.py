@@ -251,6 +251,7 @@ async def analyze_pdp(
             tenant_id=str(tenant.id),
             user_id=str(db_user.id),
             competitor_urls=body.competitor_urls,
+            compare_as=body.compare_as,
         )
     except Exception as exc:
         report.status = "failed"
@@ -289,6 +290,7 @@ async def analyze_pdp_stream(
                 tenant_id=str(tenant.id),
                 user_id=str(db_user.id),
                 competitor_urls=body.competitor_urls,
+                compare_as=body.compare_as,
             ):
                 final_state = state
                 if event["type"] == "progress":

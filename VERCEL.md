@@ -79,5 +79,21 @@ Check **Deployments → Functions → Logs**. Usually missing env vars or a cold
 | Full Mode 1 (10 agents) | May timeout | Works |
 | SSE streaming | Limited | Works |
 | Playwright scrape | No | Optional |
+| Annotated screenshot (`/api/v1/analyze/screenshot-annotate`) | No (503) | Yes, if Playwright enabled |
 
 For production, keep **Render** as primary; use Vercel for demos if needed.
+
+## Annotated screenshots (SEO tab)
+
+Vercel **cannot** run Playwright/Chromium in serverless (size + timeout). Keep `SKIP_PLAYWRIGHT=true` on Vercel.
+
+- **Vercel:** SEO tab still works; screenshot panel shows “not available on this host”. API returns **503** with a clear message.
+- **Local:** In `.env` set `SKIP_PLAYWRIGHT=false`, then:
+
+```bash
+pip install playwright
+playwright install chromium
+uvicorn app.main:app --reload
+```
+
+Do **not** add Playwright to `requirements-vercel.txt` — deploy would fail or exceed limits.

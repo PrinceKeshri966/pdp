@@ -13,8 +13,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.api.routes import analyze, auth, chat, reports
+from app.api.routes import analyze, auth, chat, reports, screenshot
 from app.core.config import get_settings
+from app.core.playwright_env import playwright_enabled
 from app.core.database import init_db
 from app.core.logging import get_logger, setup_logging
 
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
 
     # ── Routers ───────────────────────────────────────────────────────────────
     app.include_router(analyze.router, prefix="/api/v1")
+    app.include_router(screenshot.router, prefix="/api/v1")
     app.include_router(chat.router, prefix="/api/v1")
     app.include_router(auth.router, prefix="/api/v1")
     app.include_router(reports.router, prefix="/api/v1")
@@ -103,6 +105,7 @@ def create_app() -> FastAPI:
             "google_login_url": "/api/v1/auth/google/login",
             "auth_required": provider != "none"
                 or not (settings.dev_auth_bypass and settings.app_env == "development"),
+            "screenshot_available": playwright_enabled(),
         }
 
     # ── Serve the React frontend at / ─────────────────────────────────────────

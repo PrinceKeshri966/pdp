@@ -29,6 +29,7 @@ class AgentState(TypedDict, total=False):
     # ── Mode 1 inputs ─────────────────────────────────────────────────────────
     url: Optional[str]
     competitor_urls: Optional[list[str]]
+    compare_as: Optional[str]  # auto | homepage | product
 
     # ── Mode 2 inputs ─────────────────────────────────────────────────────────
     business_input: Optional[str]

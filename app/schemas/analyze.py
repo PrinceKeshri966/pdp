@@ -4,16 +4,19 @@ Request / Response schemas for Mode 1 and Mode 2 endpoints.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, field_validator
+
+CompareAsMode = Literal["auto", "homepage", "product"]
 
 
 # ── Mode 1 Request ────────────────────────────────────────────────────────────
 class AnalyzePDPRequest(BaseModel):
     url: str
     competitor_urls: list[str] = []  # optional, max 3
+    compare_as: CompareAsMode = "auto"  # auto-detect | force homepage | force product page
 
     @field_validator("url")
     @classmethod

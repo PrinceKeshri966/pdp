@@ -118,12 +118,14 @@ def build_mode1_initial_state(
     tenant_id: str,
     user_id: str,
     competitor_urls: list[str] | None = None,
+    compare_as: str = "auto",
 ) -> AgentState:
     return {
         "url": url,
         "tenant_id": tenant_id,
         "user_id": user_id,
         "competitor_urls": competitor_urls or [],
+        "compare_as": compare_as or "auto",
         "agent_reports": [],
         "errors": [],
         "status": "running",
@@ -150,8 +152,9 @@ async def stream_mode1(
     tenant_id: str,
     user_id: str,
     competitor_urls: list[str] | None = None,
+    compare_as: str = "auto",
 ):
-    initial_state = build_mode1_initial_state(url, tenant_id, user_id, competitor_urls)
+    initial_state = build_mode1_initial_state(url, tenant_id, user_id, competitor_urls, compare_as)
     logger.info("mode1.start", url=url, tenant_id=tenant_id)
     async for event, state in stream_graph_progress(_mode1_graph, initial_state, MODE1_PIPELINE):
         if event["type"] == "done":
@@ -169,6 +172,7 @@ async def run_mode1(
     tenant_id: str,
     user_id: str,
     competitor_urls: list[str] | None = None,
+    compare_as: str = "auto",
 ) -> AgentState:
     """
     Entry-point called by the FastAPI route.
@@ -180,7 +184,7 @@ async def run_mode1(
     user_id          : UUID string of the requesting user.
     competitor_urls  : Optional list of up to 2 competitor URLs (user-provided).
     """
-    initial_state = build_mode1_initial_state(url, tenant_id, user_id, competitor_urls)
+    initial_state = build_mode1_initial_state(url, tenant_id, user_id, competitor_urls, compare_as)
 
     logger.info("mode1.start", url=url, tenant_id=tenant_id)
     final_state: AgentState = await _mode1_graph.ainvoke(initial_state)  # type: ignore[assignment]

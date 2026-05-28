@@ -1,4 +1,4 @@
-"""Discover real competitor PDP URLs via Jina search."""
+"""Discover real competitor URLs via Jina search — homepage vs product page aware."""
 from __future__ import annotations
 
 import re
@@ -11,10 +11,21 @@ from app.core.config import get_settings
 _LINK_RE = re.compile(r"https?://[^\s\)\]\"'<>]+", re.I)
 _SOURCE_RE = re.compile(r"URL Source:\s*(https?://\S+)", re.I)
 _SKIP_DOMAINS = {
-    "google.com", "google.co.in", "facebook.com", "instagram.com",
-    "youtube.com", "twitter.com", "x.com", "pinterest.com", "linkedin.com",
-    "amazon.com", "amazon.in", "flipkart.com", "wikipedia.org",
+    "google.com",
+    "google.co.in",
+    "facebook.com",
+    "instagram.com",
+    "youtube.com",
+    "twitter.com",
+    "x.com",
+    "pinterest.com",
+    "linkedin.com",
+    "amazon.com",
+    "amazon.in",
+    "flipkart.com",
+    "wikipedia.org",
 }
+_PRODUCT_PATH_MARKERS = ("/product", "/products/", "/p/", "/dp/", "/item/", "/buy", "/shop/")
 
 
 def _domain(url: str) -> str:
@@ -22,6 +33,40 @@ def _domain(url: str) -> str:
         return urlparse(url).netloc.lower().replace("www.", "")
     except Exception:
         return ""
+
+
+def resolve_homepage_mode(user_url: str, compare_as: str | None = None) -> bool:
+    """Resolve whether to compare homepages from user preference or URL auto-detect."""
+    mode = (compare_as or "auto").lower().strip()
+    if mode == "homepage":
+        return True
+    if mode == "product":
+        return False
+    return is_homepage_url(user_url)
+
+
+def is_homepage_url(url: str) -> bool:
+    """True when the user URL is a site homepage, not a product/detail page."""
+    try:
+        raw = url if url.startswith("http") else f"https://{url}"
+        u = urlparse(raw)
+        path = (u.path or "/").strip().rstrip("/") or "/"
+        if path == "/":
+            return True
+        low = path.lower()
+        if any(marker in low for marker in _PRODUCT_PATH_MARKERS):
+            return False
+        segments = [s for s in path.split("/") if s]
+        return len(segments) <= 1
+    except Exception:
+        return False
+
+
+def to_site_root(url: str) -> str:
+    u = urlparse(url if url.startswith("http") else f"https://{url}")
+    scheme = u.scheme or "https"
+    netloc = u.netloc
+    return f"{scheme}://{netloc}/"
 
 
 def _is_productish(url: str) -> bool:
@@ -33,13 +78,17 @@ def _is_productish(url: str) -> bool:
     path = urlparse(url).path.lower()
     if path in ("", "/"):
         return False
-    if any(x in path for x in ("/product", "/products/", "/p/", "/dp/", "/item/", "/shop/", "/buy")):
+    if any(x in path for x in _PRODUCT_PATH_MARKERS):
         return True
     return path.count("/") >= 2 and len(path) > 10
 
 
-def _url_score(url: str) -> int:
+def _url_score(url: str, *, homepage_mode: bool) -> int:
     path = urlparse(url).path.lower()
+    if homepage_mode:
+        if path in ("", "/"):
+            return 20
+        return -10
     score = 0
     if "/products/" in path or "/product/" in path:
         score += 20
@@ -62,6 +111,27 @@ def _extract_urls(text: str) -> list[str]:
     return ordered
 
 
+def _search_queries(
+    *,
+    homepage_mode: bool,
+    product_name: str,
+    categories: list[str],
+    user_domain: str,
+) -> list[str]:
+    cat = (categories[-1] if categories else "") or "beauty"
+    name = (product_name or cat).split("|")[0].strip()[:60]
+    brand = user_domain.split(".")[0].replace("-", " ").strip() if user_domain else ""
+    if homepage_mode:
+        queries = [
+            f"{cat} beauty brand india official website",
+            f"skincare cosmetics online store india",
+        ]
+        if brand:
+            queries.append(f"brands like {brand} india beauty ecommerce")
+        return queries
+    return [f"buy {name} {cat} online india"]
+
+
 async def discover_competitor_urls(
     user_url: str,
     product_name: str,
@@ -69,48 +139,64 @@ async def discover_competitor_urls(
     *,
     existing: list[str] | None = None,
     limit: int = 3,
+    homepage_mode: bool | None = None,
 ) -> list[str]:
     settings = get_settings()
     user_domain = _domain(user_url)
+    if homepage_mode is None:
+        homepage_mode = is_homepage_url(user_url)
+
     found: list[str] = []
     seen_domains: set[str] = {user_domain}
 
     for u in existing or []:
-        d = _domain(u)
+        norm = to_site_root(u) if homepage_mode else u.split("#")[0]
+        d = _domain(norm)
         if d and d not in seen_domains:
-            found.append(u)
+            found.append(norm)
             seen_domains.add(d)
         if len(found) >= limit:
             return found[:limit]
 
-    cat = (categories[-1] if categories else "") or "product"
-    name = (product_name or cat).split("|")[0].strip()[:60]
-    query = f"buy {name} {cat} online india"
     headers: dict[str, str] = {"Accept": "text/plain", "User-Agent": "OptiPDP/1.0"}
     if settings.jina_api_key.strip():
         headers["Authorization"] = f"Bearer {settings.jina_api_key.strip()}"
 
+    queries = _search_queries(
+        homepage_mode=homepage_mode,
+        product_name=product_name,
+        categories=categories,
+        user_domain=user_domain,
+    )
+
     try:
         async with httpx.AsyncClient(timeout=55.0, follow_redirects=True) as client:
-            resp = await client.get(f"https://s.jina.ai/{quote(query)}", headers=headers)
-            resp.raise_for_status()
-            candidates = sorted(
-                _extract_urls(resp.text),
-                key=_url_score,
-                reverse=True,
-            )
-            for url in candidates:
-                dom = _domain(url)
-                if not dom or dom in seen_domains or dom == user_domain:
-                    continue
-                if any(dom == s or dom.endswith("." + s) for s in _SKIP_DOMAINS):
-                    continue
-                if not _is_productish(url):
-                    continue
-                found.append(url.split("#")[0])
-                seen_domains.add(dom)
+            for query in queries:
                 if len(found) >= limit:
                     break
+                resp = await client.get(f"https://s.jina.ai/{quote(query)}", headers=headers)
+                resp.raise_for_status()
+                candidates = sorted(
+                    _extract_urls(resp.text),
+                    key=lambda u: _url_score(u, homepage_mode=homepage_mode),
+                    reverse=True,
+                )
+                for url in candidates:
+                    dom = _domain(url)
+                    if not dom or dom in seen_domains or dom == user_domain:
+                        continue
+                    if any(dom == s or dom.endswith("." + s) for s in _SKIP_DOMAINS):
+                        continue
+                    if homepage_mode:
+                        norm = to_site_root(url)
+                    else:
+                        if not _is_productish(url):
+                            continue
+                        norm = url.split("#")[0]
+                    found.append(norm)
+                    seen_domains.add(dom)
+                    if len(found) >= limit:
+                        break
     except Exception:
         pass
 

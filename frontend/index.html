@@ -311,6 +311,99 @@
             return `https://api.microlink.io/?url=${encodeURIComponent(url)}&screenshot=true&embed=screenshot.url&meta=false&viewport.width=1280&viewport.height=800`;
         }
 
+        function getCheckPageLocation(checkId) {
+            const zones = {
+                kw_in_h1: { zone: 'Main H1 headline', top: '10%', height: '14%', hint: 'Look at the largest heading at the top of the page — that is your H1.', serpOnly: false },
+                kw_in_title: { zone: 'Browser tab / Google title', top: null, hint: 'This is the page title tag — shown in the browser tab and as the blue link on Google, not as large text on the page.', serpOnly: true },
+                kw_in_meta: { zone: 'Google search snippet', top: null, hint: 'Meta description appears under your link on Google — it is not visible as body text on the live page.', serpOnly: true },
+                kw_in_first_100: { zone: 'Opening paragraph', top: '18%', height: '16%', hint: 'Check the first paragraph below the main headline — your keyword should appear early.', serpOnly: false },
+                meta_has_cta: { zone: 'Google search snippet', top: null, hint: 'The call-to-action lives in your meta description on Google results.', serpOnly: true },
+                headings_logical_hierarchy: { zone: 'Section headings', top: '28%', height: '45%', hint: 'Scan H2/H3 section titles as you scroll — they should follow a logical order.', serpOnly: false },
+                headings_keywords: { zone: 'Section headings', top: '28%', height: '45%', hint: 'Look at H2/H3 headings in product or category sections.', serpOnly: false },
+                content_adequate: { zone: 'Main content area', top: '22%', height: '55%', hint: 'Scroll through the full page body — descriptions, features, and details.', serpOnly: false },
+                content_unique: { zone: 'Main content area', top: '22%', height: '55%', hint: 'Read product or brand copy in the middle of the page.', serpOnly: false },
+                trust_reviews: { zone: 'Reviews & ratings', top: '55%', height: '20%', hint: 'Customer reviews usually sit mid-page or below product details.', serpOnly: false },
+                trust_rating: { zone: 'Star rating', top: '14%', height: '10%', hint: 'Star ratings often appear near the product title or price.', serpOnly: false },
+                trust_return: { zone: 'Footer / policy links', top: '78%', height: '18%', hint: 'Return policy links are usually in the footer or near checkout trust badges.', serpOnly: false },
+                trust_security: { zone: 'Checkout / trust badges', top: '72%', height: '20%', hint: 'Security badges and payment icons appear near Add to Cart or in the footer.', serpOnly: false },
+                trust_moneyback: { zone: 'Trust badges near price', top: '16%', height: '12%', hint: 'Money-back guarantees often sit near the price or Add to Cart button.', serpOnly: false },
+                img_angles: { zone: 'Product image gallery', top: '8%', height: '35%', hint: 'Product photos and gallery thumbnails — usually left or top of the page.', serpOnly: false },
+                img_zoom: { zone: 'Product image gallery', top: '8%', height: '35%', hint: 'Click product images to see if zoom or multiple angles are available.', serpOnly: false },
+                img_lifestyle: { zone: 'Product image gallery', top: '8%', height: '35%', hint: 'Lifestyle shots appear in the image carousel alongside pack shots.', serpOnly: false },
+                img_video: { zone: 'Product media', top: '8%', height: '35%', hint: 'Product video or 360° view sits in the image gallery area.', serpOnly: false },
+                cta_found: { zone: 'Add to Cart / Shop button', top: '20%', height: '12%', hint: 'Primary CTA buttons are usually near the price, above the fold.', serpOnly: false },
+                cta_above_fold: { zone: 'Hero / above the fold', top: '8%', height: '30%', hint: 'The main action button should be visible without scrolling.', serpOnly: false },
+                cta_sticky: { zone: 'Sticky bar (bottom)', top: '88%', height: '10%', hint: 'On mobile, a sticky Add to Cart bar sticks to the bottom while scrolling.', serpOnly: false },
+                faq_found: { zone: 'FAQ section', top: '62%', height: '22%', hint: 'FAQ accordions are usually lower on the page before the footer.', serpOnly: false },
+                faq_conversational: { zone: 'FAQ section', top: '62%', height: '22%', hint: 'Check how questions are phrased in the FAQ block.', serpOnly: false },
+                faq_schema: { zone: 'FAQ section (page source)', top: '62%', height: '22%', hint: 'FAQ content on page — schema is in HTML source.', serpOnly: false },
+                info_size_guide: { zone: 'Size / fit info', top: '38%', height: '18%', hint: 'Size guides appear near variant selectors or in product details tabs.', serpOnly: false },
+                info_material: { zone: 'Product details', top: '35%', height: '25%', hint: 'Material and ingredient info is in the description or specs section.', serpOnly: false },
+                info_specs: { zone: 'Specifications tab', top: '40%', height: '22%', hint: 'Technical specs are often in tabs or accordion below the description.', serpOnly: false },
+                urgency_stock: { zone: 'Near Add to Cart', top: '18%', height: '14%', hint: 'Low-stock messages appear close to the buy button.', serpOnly: false },
+                urgency_limited: { zone: 'Promo banner / hero', top: '4%', height: '12%', hint: 'Limited-time offers often show in the top banner or hero.', serpOnly: false },
+                urgency_social: { zone: 'Social proof strip', top: '24%', height: '10%', hint: '"X people bought this" messages sit near price or reviews.', serpOnly: false },
+                tech_canonical: { zone: 'Page source (HTML head)', top: null, hint: 'Canonical tag is in the HTML <head> — use View Page Source.', serpOnly: true },
+                tech_og: { zone: 'Page source / social preview', top: null, hint: 'Open Graph tags are in HTML head — they control link previews on social.', serpOnly: true },
+                schema_product: { zone: 'Page source (JSON-LD)', top: null, hint: 'Product schema is embedded in page source, not visible on screen.', serpOnly: true },
+            };
+            return zones[checkId] || { zone: 'Top of page', top: '15%', height: '18%', hint: 'Check the highlighted area on your site preview below.', serpOnly: false };
+        }
+
+        function getDetectedValueForCheck(checkId, result) {
+            const seo = result?.seo_report || {};
+            const ux = result?.ux_report || {};
+            const map = {
+                kw_in_h1: seo.h1?.value,
+                kw_in_title: seo.title_tag?.value,
+                kw_in_meta: seo.meta_description?.value,
+                trust_reviews: ux.trust_signals?.has_reviews != null ? (ux.trust_signals.has_reviews ? 'Reviews found' : 'No reviews section') : null,
+                trust_rating: ux.trust_signals?.avg_rating != null ? `Rating: ${ux.trust_signals.avg_rating}` : null,
+                img_video: ux.media?.has_video != null ? (ux.media.has_video ? 'Video present' : 'No product video') : null,
+            };
+            return map[checkId] || null;
+        }
+
+        function CheckSitePreview({ url, checkId, passed }) {
+            const [useIframe, setUseIframe] = useState(false);
+            const loc = getCheckPageLocation(checkId);
+            const preview = sitePreviewUrl(url);
+            if (!url || loc.serpOnly) return null;
+            return (
+                <div className="relative rounded-xl overflow-hidden border border-slate-200 bg-slate-100">
+                    <div className="h-44 relative overflow-hidden">
+                        {useIframe || !preview ? (
+                            <iframe
+                                title="Site preview"
+                                src={url}
+                                className="w-[400%] h-[400%] origin-top-left scale-[0.25] pointer-events-none border-0 bg-white"
+                                sandbox="allow-scripts allow-same-origin"
+                            />
+                        ) : (
+                            <img
+                                src={preview}
+                                alt="Your site preview"
+                                className="w-full h-full object-cover object-top"
+                                loading="lazy"
+                                onError={() => setUseIframe(true)}
+                            />
+                        )}
+                        {loc.top && (
+                            <div
+                                className={`absolute left-2 right-2 border-2 rounded-lg pointer-events-none ${passed ? 'border-emerald-500 bg-emerald-500/20' : 'border-red-500 bg-red-500/20 animate-pulse'}`}
+                                style={{ top: loc.top, height: loc.height || '15%' }}
+                            >
+                                <span className={`absolute -top-5 left-0 text-[10px] font-bold px-2 py-0.5 rounded shadow bg-white ${passed ? 'text-emerald-700' : 'text-red-700'}`}>
+                                    ↓ {loc.zone}
+                                </span>
+                            </div>
+                        )}
+                    </div>
+                    <p className="text-[10px] text-slate-500 px-2 py-1.5 bg-white border-t border-slate-100 truncate">{url.replace(/^https?:\/\//, '')}</p>
+                </div>
+            );
+        }
+
         function SitePreviewFrame({ url, name }) {
             const [useIframe, setUseIframe] = useState(false);
             const preview = sitePreviewUrl(url);
@@ -344,6 +437,35 @@
             } catch {
                 return url || 'website';
             }
+        }
+
+        function detectPageTypeFromUrl(url) {
+            if (!url?.trim()) return null;
+            try {
+                const u = new URL(url.startsWith('http') ? url : `https://${url}`);
+                const path = (u.pathname || '/').replace(/\/$/, '') || '/';
+                if (path === '/') return 'homepage';
+                const low = path.toLowerCase();
+                if (['/product', '/products/', '/p/', '/dp/', '/item/', '/buy', '/shop/'].some(m => low.includes(m))) return 'product';
+                const segments = path.split('/').filter(Boolean);
+                return segments.length <= 1 ? 'homepage' : 'product';
+            } catch {
+                return null;
+            }
+        }
+
+        function getCompareAsHint(compareAs, url) {
+            if (compareAs === 'homepage') return 'Competitors will be matched to their homepages only (e.g. hokmakeup.com/).';
+            if (compareAs === 'product') return 'Competitors will be matched to similar product detail pages.';
+            const detected = detectPageTypeFromUrl(url);
+            if (!detected) return 'We will auto-detect homepage vs product page from your URL.';
+            return detected === 'homepage'
+                ? 'Auto-detected as homepage — competitors will use their homepages too.'
+                : 'Auto-detected as product page — competitors will use matching product URLs.';
+        }
+
+        function getComparePageTypeLabel(pageType) {
+            return pageType === 'homepage' ? 'Homepages' : 'Product pages';
         }
 
         function faviconUrl(url) {
@@ -513,8 +635,19 @@
             );
         }
 
+        function LoadingSpinner({ text }) {
+            return (
+                <div className="flex flex-col items-center justify-center py-12 text-slate-500">
+                    <div className="radar-spinner mb-4 flex items-center justify-center" style={{ width: 48, height: 48 }}>
+                        <i className="ph ph-camera text-xl text-indigo-500"></i>
+                    </div>
+                    {text && <p className="text-sm font-medium">{text}</p>}
+                </div>
+            );
+        }
+
         // ── Main App ──────────────────────────────────────────────────────────────
-        function App({ needsSignIn, authUser, authProvider, authError }) {
+        function App({ needsSignIn, authUser, authProvider, authError, screenshotAvailable = false }) {
             if (needsSignIn) return <SignInView authProvider={authProvider} authError={authError} />;
 
             // VIEWS: HOME | MODE1_INPUT | MODE2_INPUT | ANALYZING | RESEARCHING |
@@ -526,7 +659,10 @@
 
             // Mode 1 state
             const [urlInput, setUrlInput] = useState('');
+            const [compareAs, setCompareAs] = useState('auto');
             const [mode1Result, setMode1Result] = useState(null);
+            const [screenshotData, setScreenshotData] = useState(null);
+            const [screenshotLoading, setScreenshotLoading] = useState(false);
             const [reportTab, setReportTab] = useState('COMPARE');
             const [historyItems, setHistoryItems] = useState({ analysis_reports: [], blueprints: [] });
             const [historyLoading, setHistoryLoading] = useState(false);
@@ -589,6 +725,50 @@
                 if (view === 'HISTORY') loadHistory();
             }, [view]);
 
+            const fetchScreenshot = async () => {
+                if (!screenshotAvailable) {
+                    showToast('Annotated screenshots need Playwright — not available on Vercel. Run the API locally with SKIP_PLAYWRIGHT=false.');
+                    return;
+                }
+                const targetUrl = (mode1Result?.source_url || urlInput || '').trim();
+                if (!mode1Result || !targetUrl) return;
+                const seoRpt = mode1Result.seo_report || {};
+                const issues = [];
+                if (!seoRpt.h1?.value) {
+                    issues.push({ id: 'missing_h1', severity: 'critical', label: 'H1 missing' });
+                }
+                if ((seoRpt.meta_description?.length ?? 0) < 120) {
+                    issues.push({ id: 'meta_too_short', severity: 'warning', label: 'Meta too short' });
+                }
+                if ((seoRpt.image_seo?.missing_alt ?? 0) > 0) {
+                    issues.push({ id: 'img_no_alt', severity: 'critical', label: 'No alt text' });
+                }
+                if (!seoRpt.structured_data?.has_product_schema) {
+                    issues.push({ id: 'no_schema', severity: 'critical', label: 'No schema' });
+                }
+                if (!seoRpt.technical_seo?.canonical_present) {
+                    issues.push({ id: 'no_canonical', severity: 'warning', label: 'No canonical' });
+                }
+                setScreenshotLoading(true);
+                try {
+                    const resp = await apiFetch('/api/v1/analyze/screenshot-annotate', {
+                        method: 'POST',
+                        body: { url: targetUrl, issues },
+                    });
+                    setScreenshotData(resp.screenshot_base64);
+                } catch (e) {
+                    showToast(`Screenshot failed: ${e.message}`);
+                } finally {
+                    setScreenshotLoading(false);
+                }
+            };
+
+            useEffect(() => {
+                if (screenshotAvailable && reportTab === 'SEO' && mode1Result && !screenshotData) {
+                    fetchScreenshot();
+                }
+            }, [reportTab, screenshotAvailable]);
+
             const openHistoryReport = async (id) => {
                 setHistoryOpening(id);
                 try {
@@ -602,6 +782,7 @@
                     }
                     setMode1Result(data);
                     setUrlInput(data.source_url || '');
+                    setScreenshotData(null);
                     setReportTab('COMPARE');
                     setView('REPORT_MODE1');
                 } catch (e) {
@@ -675,7 +856,7 @@
                 try {
                     const result = await apiStreamAnalyze(
                         '/api/v1/analyze/pdp/stream',
-                        { url: urlInput },
+                        { url: urlInput, compare_as: compareAs },
                         (evt) => {
                             if (evt.label) setAnalyzingText(evt.label);
                             if (evt.completed_count != null) {
@@ -684,6 +865,7 @@
                         }
                     );
                     setMode1Result(result);
+                    setScreenshotData(null);
                     setReportTab('COMPARE');
                     setView('REPORT_MODE1');
                     loadHistory();
@@ -1053,9 +1235,12 @@
                         const entry = mode1Result
                             ? personalizeGlossaryEntry(rawEntry, checkDetail.checkId, passed)
                             : rawEntry;
+                        const previewUrl = mode1Result?.source_url || urlInput || '';
+                        const pageLoc = getCheckPageLocation(checkDetail.checkId);
+                        const detectedVal = mode1Result ? getDetectedValueForCheck(checkDetail.checkId, mode1Result) : null;
                         return (
                             <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50" onClick={() => setCheckDetail(null)}>
-                                <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                                <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
                                     <div className={`px-6 py-5 border-b flex items-start justify-between gap-4 ${passed ? 'bg-emerald-50 border-emerald-100' : 'bg-red-50 border-red-100'}`}>
                                         <div className="flex items-start gap-3">
                                             {passed
@@ -1082,7 +1267,24 @@
                                             <p className={`text-sm leading-relaxed ${passed ? 'text-emerald-800' : 'text-red-800'}`}>
                                                 {passed ? (entry.ok || 'This looks good on your page.') : (entry.fail || 'This needs attention on your page.')}
                                             </p>
+                                            {detectedVal && (
+                                                <p className="text-xs mt-2 font-mono bg-slate-100 text-slate-700 px-3 py-2 rounded-lg border border-slate-200">
+                                                    Found on your site: <strong>{detectedVal}</strong>
+                                                </p>
+                                            )}
                                         </div>
+                                        {previewUrl && (
+                                            <div>
+                                                <p className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">Where on your page</p>
+                                                <p className="text-sm text-slate-600 mb-3">{pageLoc.hint}</p>
+                                                {!pageLoc.serpOnly && <CheckSitePreview url={previewUrl} checkId={checkDetail.checkId} passed={passed} />}
+                                                {pageLoc.serpOnly && (
+                                                    <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 text-sm text-amber-900">
+                                                        <i className="ph ph-magnifying-glass mr-1"></i> This check applies to <strong>{pageLoc.zone}</strong> — open your site and check the browser tab or Google preview in the SEO tab.
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
                                         {!passed && (
                                             <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4">
                                                 <p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-2">How to fix it</p>
@@ -1096,7 +1298,17 @@
                                             </div>
                                         )}
                                     </div>
-                                    <div className="px-6 py-4 border-t border-slate-100 flex justify-end">
+                                    <div className="px-6 py-4 border-t border-slate-100 flex flex-wrap justify-end gap-2">
+                                        {previewUrl && (
+                                            <a
+                                                href={previewUrl.startsWith('http') ? previewUrl : `https://${previewUrl}`}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="px-5 py-2 border border-indigo-200 text-indigo-700 rounded-lg font-medium hover:bg-indigo-50 inline-flex items-center gap-2"
+                                            >
+                                                <i className="ph ph-arrow-square-out"></i> Preview on your site
+                                            </a>
+                                        )}
                                         <button type="button" onClick={() => setCheckDetail(null)} className="px-5 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700">Got it</button>
                                     </div>
                                 </div>
@@ -1422,11 +1634,11 @@
                                     <p className="text-slate-500 mb-4 max-w-xl mx-auto">
                                         Paste any URL. 10 AI agents scan it in 2–4 minutes. Get SEO, AI visibility, conversion, psychological, and competitor scores. Plus ready-to-use fixes and copy.
                                     </p>
-                                    <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-200 flex items-center focus-within:border-indigo-400">
+                                    <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-200 flex items-center focus-within:border-indigo-400 mb-3">
                                         <div className="pl-4 text-slate-400"><i className="ph ph-link text-xl"></i></div>
                                         <input
                                             type="url"
-                                            placeholder="https://www.fitpass.co.in/"
+                                            placeholder="https://www.mamaearth.in/"
                                             className="w-full p-3 bg-transparent outline-none text-slate-700"
                                             value={urlInput}
                                             onChange={e => setUrlInput(e.target.value)}
@@ -1435,6 +1647,32 @@
                                         <button onClick={runMode1Analysis} className="bg-indigo-600 text-white px-6 py-3 rounded-lg hover:bg-indigo-700 font-semibold flex items-center gap-2 whitespace-nowrap">
                                             <i className="ph ph-magic-wand"></i> Run Agents
                                         </button>
+                                    </div>
+                                    <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                                        <label htmlFor="compare-as" className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">
+                                            Compare competitors as
+                                        </label>
+                                        <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                                            <select
+                                                id="compare-as"
+                                                value={compareAs}
+                                                onChange={e => setCompareAs(e.target.value)}
+                                                className="w-full sm:w-auto min-w-[200px] px-3 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm font-medium text-slate-800 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                                            >
+                                                <option value="auto">Auto-detect from URL</option>
+                                                <option value="homepage">Homepage only</option>
+                                                <option value="product">Product page only</option>
+                                            </select>
+                                            {compareAs === 'auto' && detectPageTypeFromUrl(urlInput) && (
+                                                <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${detectPageTypeFromUrl(urlInput) === 'homepage' ? 'bg-cyan-100 text-cyan-800' : 'bg-purple-100 text-purple-800'}`}>
+                                                    Detected: {detectPageTypeFromUrl(urlInput) === 'homepage' ? 'Homepage' : 'Product page'}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                                            <i className="ph ph-info mr-1"></i>
+                                            {getCompareAsHint(compareAs, urlInput)}
+                                        </p>
                                     </div>
                                 </div>
                             )}
@@ -1825,6 +2063,12 @@
                                                 const lc = competitorRpt.live_compare || {};
                                                 const sites = lc.sites || [];
                                                 const rows = lc.rows || [];
+                                                const pageType = lc.compare_page_type || 'product';
+                                                const pageTypeLabel = getComparePageTypeLabel(pageType);
+                                                const compareAsUsed = lc.compare_as || 'auto';
+                                                const compareAsLabel = compareAsUsed === 'auto'
+                                                    ? `Auto (${pageTypeLabel.toLowerCase()})`
+                                                    : (compareAsUsed === 'homepage' ? 'Homepage' : 'Product page');
                                                 const fmtVal = (v, key) => {
                                                     if (typeof v === 'boolean') return v ? '✓ Yes' : '✗ No';
                                                     if (v == null || v === '') return '—';
@@ -1838,14 +2082,20 @@
                                                         <div className="text-sm text-cyan-900">
                                                             <p className="font-semibold mb-1">Real side-by-side compare</p>
                                                             <p>Your site vs top competitors — scraped live. Source: <strong>{competitorRpt.data_source || 'live_scrape'}</strong></p>
+                                                            <p className="text-xs mt-1 text-cyan-800">
+                                                                Compare mode: <strong>{compareAsLabel}</strong> · Matching <strong>{pageTypeLabel}</strong> across all sites.
+                                                            </p>
                                                         </div>
                                                     </div>
                                                     <div className={`grid gap-4 ${sites.length <= 2 ? 'grid-cols-1 md:grid-cols-2' : sites.length === 3 ? 'grid-cols-1 md:grid-cols-3' : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-4'}`}>
                                                         {sites.map((site, i) => (
                                                             <div key={i} className={`rounded-xl border overflow-hidden bg-white shadow-sm ${i === 0 ? 'border-indigo-400 ring-2 ring-indigo-100' : 'border-slate-200'}`}>
-                                                                <div className={`px-3 py-2 text-xs font-bold flex justify-between items-center ${i === 0 ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700'}`}>
-                                                                    <span>{i === 0 ? '★ Your site' : site.name}</span>
-                                                                    {!site.scrape_ok && site.role !== 'you' && <span className="text-red-500 text-[10px]">Load failed</span>}
+                                                                <div className={`px-3 py-2 text-xs font-bold flex justify-between items-center gap-2 ${i === 0 ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700'}`}>
+                                                                    <span className="truncate">{i === 0 ? '★ Your site' : site.name}</span>
+                                                                    <div className="flex items-center gap-1 shrink-0">
+                                                                        {!site.scrape_ok && site.role !== 'you' && <span className="text-red-500 text-[9px]">Failed</span>}
+                                                                        <span className={`text-[9px] px-1.5 py-0.5 rounded ${i === 0 ? 'bg-indigo-500' : 'bg-white text-slate-500'}`}>{pageType === 'homepage' ? 'Homepage' : 'Product'}</span>
+                                                                    </div>
                                                                 </div>
                                                                 <div className="h-44 bg-slate-50 relative overflow-hidden">
                                                                     <SitePreviewFrame url={site.url} name={site.name} />
@@ -1955,6 +2205,41 @@
                                                         </div>
                                                     </div>
 
+                                                    <div style={{ display: 'grid', gridTemplateColumns: '55% 45%', gap: '24px', alignItems: 'start' }}>
+                                                        <div style={{ position: 'sticky', top: '80px' }}>
+                                                            {screenshotLoading && <LoadingSpinner text="Taking screenshot..." />}
+                                                            {screenshotData && !screenshotLoading && (
+                                                                <div style={{ borderRadius: '12px', overflow: 'hidden', border: '1px solid #e2e8f0' }}>
+                                                                    <div style={{ background: '#1e293b', padding: '8px 12px', display: 'flex', gap: '6px', alignItems: 'center' }}>
+                                                                        <div style={{ width: '10px', height: '10px', background: '#ef4444', borderRadius: '50%' }} />
+                                                                        <div style={{ width: '10px', height: '10px', background: '#f59e0b', borderRadius: '50%' }} />
+                                                                        <div style={{ width: '10px', height: '10px', background: '#22c55e', borderRadius: '50%' }} />
+                                                                        <span style={{ color: '#94a3b8', fontSize: '11px', marginLeft: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{analyzedUrl || urlInput}</span>
+                                                                    </div>
+                                                                    <img
+                                                                        src={`data:image/png;base64,${screenshotData}`}
+                                                                        style={{ width: '100%', display: 'block' }}
+                                                                        alt="Annotated screenshot"
+                                                                    />
+                                                                </div>
+                                                            )}
+                                                            {!screenshotData && !screenshotLoading && !screenshotAvailable && (
+                                                                <div style={{ padding: '16px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '12px', fontSize: '13px', color: '#92400e', lineHeight: 1.5 }}>
+                                                                    <strong>Screenshots unavailable on Vercel.</strong> Playwright needs a full server (Render/Docker) or local dev with <code style={{ fontSize: '11px' }}>SKIP_PLAYWRIGHT=false</code> and <code style={{ fontSize: '11px' }}>playwright install chromium</code>.
+                                                                </div>
+                                                            )}
+                                                            {!screenshotData && !screenshotLoading && screenshotAvailable && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={fetchScreenshot}
+                                                                    style={{ width: '100%', padding: '16px', background: '#f1f5f9', border: '2px dashed #cbd5e1', borderRadius: '12px', cursor: 'pointer', fontWeight: 600, color: '#64748b' }}
+                                                                >
+                                                                    📸 Load Annotated Screenshot
+                                                                </button>
+                                                            )}
+                                                        </div>
+
+                                                        <div className="space-y-6">
                                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                                         <SectionCard title="Title Tag" rightElement={<span className="text-xs font-bold text-slate-400">Score: {seoRpt.title_tag?.score}/10</span>}>
                                                             <p className="text-slate-800 font-medium mb-2">{seoRpt.title_tag?.value || '—'}</p>
@@ -2046,6 +2331,8 @@
                                                                 )) : <li className="text-sm text-slate-500">Run analysis to get suggestions.</li>}
                                                             </ul>
                                                         </SectionCard>
+                                                    </div>
+                                                        </div>
                                                     </div>
                                                 </div>
                                             )}
@@ -3005,6 +3292,7 @@
             let authUser = null;
             let authProvider = 'none';
             let authError = null;
+            let config = null;
 
             const params = new URLSearchParams(window.location.search);
             const urlToken = params.get('token');
@@ -3019,7 +3307,6 @@
             }
 
             try {
-                let config = null;
                 const resp = await fetch('/api/v1/config');
                 if (resp.ok) {
                     config = await resp.json();
@@ -3076,7 +3363,13 @@
             }
 
             ReactDOM.createRoot(document.getElementById('root')).render(
-                <App needsSignIn={needsSignIn} authUser={authUser} authProvider={authProvider} authError={authError} />
+                <App
+                    needsSignIn={needsSignIn}
+                    authUser={authUser}
+                    authProvider={authProvider}
+                    authError={authError}
+                    screenshotAvailable={!!config?.screenshot_available}
+                />
             );
         }
 

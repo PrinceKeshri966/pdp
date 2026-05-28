@@ -21,12 +21,12 @@ _settings = get_settings()
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 529}
 _MAX_ATTEMPTS = 8
-_MAX_CONCURRENT = 2
+_MAX_CONCURRENT = 8
 
 _client = AsyncAnthropic(
     api_key=_settings.anthropic_api_key,
     max_retries=0,
-    timeout=600.0,
+    timeout=180.0,
 )
 _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 
