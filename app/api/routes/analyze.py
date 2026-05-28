@@ -107,6 +107,9 @@ def _persist_mode1_report(report: AnalysisReport, final_state: dict) -> None:
     report.final_diagnosis = final_state.get("final_diagnosis") or {}
     report.autofix_report = final_state.get("autofix_report") or {}
     report.generated_content = final_state.get("generated_content") or {}
+    jsd["_audit_reliability"] = final_state.get("audit_reliability") or {}
+    jsd["_run_analytics"] = final_state.get("run_analytics") or {}
+    report.json_structured_data = jsd
     report.seo_score = report.seo_report.get("overall_seo_score")
     report.overall_health_score = report.final_diagnosis.get("overall_health_score")
     report.agent_logs = final_state.get("agent_reports", [])
@@ -128,6 +131,7 @@ def _dom_from_state_or_report(final_state: dict, report: AnalysisReport) -> dict
 
 
 def _mode1_response(report: AnalysisReport, final_state: dict, url: str) -> AnalyzePDPResponse:
+    jsd = report.json_structured_data or {}
     return AnalyzePDPResponse(
         report_id=report.id,
         status=report.status,
@@ -144,6 +148,8 @@ def _mode1_response(report: AnalysisReport, final_state: dict, url: str) -> Anal
         final_diagnosis=report.final_diagnosis,
         autofix_report=report.autofix_report,
         generated_content=report.generated_content,
+        audit_reliability=jsd.get("_audit_reliability") or final_state.get("audit_reliability") or {},
+        run_analytics=jsd.get("_run_analytics") or final_state.get("run_analytics") or {},
         agent_reports=final_state.get("agent_reports", []),
         errors=final_state.get("errors", []),
     )

@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # ── Firecrawl ──────────────────────────────────────────────────────────────────────────────────
     firecrawl_api_key: str = ""
 
+    # ── Redis (optional caching) ─────────────────────────────────────────────
+    redis_url: str = ""
+
     # ── CORS ─────────────────────────────────────────────────────────────────
     allowed_origins: str = "http://localhost:3000,http://localhost:8000,http://127.0.0.1:8000"
 

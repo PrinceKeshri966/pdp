@@ -14,6 +14,7 @@ from app.agents.context_router import format_context_for_llm
 from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
 from app.agents.psychology_preprocessor import extract_psychology_facts
+from app.agents.scoring_engine import apply_reliability_caps
 from app.agents.state import AgentState, state_dict
 from app.core.logging import get_logger
 
@@ -153,6 +154,10 @@ Recommend persuasion improvements and behavioral triggers only."""
         return {"errors": [parse_err]}
 
     psychology_report = merge_psychology_report(psych_facts, llm_layer)
+    if psychology_report.get("overall_psychology_score") is not None:
+        psychology_report["overall_psychology_score"] = apply_reliability_caps(
+            float(psychology_report["overall_psychology_score"]), dict(state)
+        )
     logger.info(
         "psychology_agent.done",
         score=psychology_report.get("overall_psychology_score"),

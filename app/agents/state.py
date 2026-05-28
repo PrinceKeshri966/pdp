@@ -43,6 +43,12 @@ class AgentState(TypedDict, total=False):
     scraper_method: Optional[str]
     dom_technical_seo: Optional[dict[str, Any]]  # verified HTML facts from scraper pre-parse
     scrape_html: Optional[str]  # truncated HTML for link extraction (context router)
+    scrape_validation: Optional[dict[str, Any]]
+    scrape_retry_count: Optional[int]
+    scrape_retry_methods: Optional[list[str]]
+    partial_analysis: Optional[bool]
+    extraction_confidence: Optional[dict[str, Any]]
+    visual_ux_facts: Optional[dict[str, Any]]
 
     # ── Phase 1b: Context router (strategic crawl + agent packages) ───────────
     page_contexts: Optional[dict[str, Any]]  # role -> structured_page_summary
@@ -60,6 +66,10 @@ class AgentState(TypedDict, total=False):
     ux_report: Optional[dict[str, Any]]
     competitor_report: Optional[dict[str, Any]]
     psychology_report: Optional[dict[str, Any]]
+    validation_report: Optional[dict[str, Any]]
+    deterministic_scores: Optional[dict[str, Any]]
+    audit_reliability: Optional[dict[str, Any]]
+    run_analytics: Optional[dict[str, Any]]
 
     # ── Phase 3: Prioritization output ───────────────────────────────────────
     final_diagnosis: Optional[dict[str, Any]]

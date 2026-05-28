@@ -8,16 +8,19 @@ from typing import Any
 
 MODE1_PIPELINE: list[tuple[str, str]] = [
     ("scraper", "Scraper Agent: Fetching page..."),
+    ("scrape_quality", "Scrape Validator: Checking content quality..."),
     ("context_router", "Context Router: Mapping strategic pages..."),
+    ("visual_ux", "Visual UX: Capturing layout signals..."),
     ("extractor", "Extractor Agent: Parsing product data..."),
     ("seo", "SEO Agent: Auditing search signals..."),
     ("aeo", "AEO Agent: Checking AI visibility..."),
     ("ux", "UX Agent: Evaluating conversion..."),
     ("competitor", "Competitor Agent: Benchmarking market..."),
     ("psychology", "Psychology Agent: Analyzing triggers..."),
+    ("validator", "Validator: Cross-checking report accuracy..."),
     ("prioritization", "Prioritization Agent: Building action plan..."),
     ("autofix", "AutoFix Agent: Generating fixes..."),
-    ("content_gen", "Content Agent: Writing optimized copy..."),
+    ("content_gen", "Content Agent: Preparing copy shell..."),
 ]
 
 MODE2_PIPELINE: list[tuple[str, str]] = [

@@ -59,6 +59,10 @@ class AnalyzePDPResponse(BaseModel):
     dom_technical_seo: dict[str, Any] = {}
     source_url: str | None = None
 
+    # Reliability & observability
+    audit_reliability: dict[str, Any] = {}
+    run_analytics: dict[str, Any] = {}
+
     # Meta
     agent_reports: list[dict[str, Any]] = []
     errors: list[str] = []

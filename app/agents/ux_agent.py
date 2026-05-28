@@ -15,6 +15,7 @@ from app.agents.context_router import format_context_for_llm
 from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
 from app.agents.state import AgentState, state_dict
+from app.agents.scoring_engine import apply_reliability_caps, blend_score, compute_deterministic_scores
 from app.agents.ux_preprocessor import extract_ux_facts
 from app.core.logging import get_logger
 
@@ -166,6 +167,29 @@ Analyze conversion friction and CRO opportunities only."""
         return {"errors": [parse_err]}
 
     ux_report = merge_ux_report(ux_facts, llm_layer)
+    visual = state_dict(state, "visual_ux_facts")
+    if visual.get("capture_ok"):
+        ux_report["cta_analysis"]["above_fold"] = ux_report["cta_analysis"].get("above_fold") or visual.get(
+            "cta_above_fold", False
+        )
+        ux_report["trust_signals"]["security_badges"] = ux_report["trust_signals"].get(
+            "security_badges"
+        ) or visual.get("trust_badges_visible", False)
+        if visual.get("mobile_layout_quality") == "poor":
+            ux_report["mobile_ux"]["issues"] = (ux_report["mobile_ux"].get("issues") or []) + [
+                "Mobile layout overflow detected (visual capture)"
+            ]
+
+    det = compute_deterministic_scores(
+        ux_facts=ux_facts,
+        scrape_validation=state_dict(state, "scrape_validation"),
+        extraction_confidence=state_dict(state, "extraction_confidence"),
+    )
+    ux_report["conversion_score"] = apply_reliability_caps(
+        blend_score(det["deterministic_scores"]["ux"], ux_report.get("conversion_score")),
+        dict(state),
+    )
+
     logger.info("ux_agent.done", score=ux_report.get("conversion_score"), duration_ms=duration_ms)
 
     return {

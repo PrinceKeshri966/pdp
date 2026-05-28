@@ -1,0 +1,12 @@
+[
+  {"url": "https://www.allbirds.com/products/mens-tree-runners", "platform": "shopify", "page_type": "product", "expect": {"has_price": true, "min_words": 200}},
+  {"url": "https://www.gymshark.com/products/gymshark-arrival-5-shorts-black-ss22", "platform": "shopify", "page_type": "product", "expect": {"has_price": true}},
+  {"url": "https://www.boat-lifestyle.com/products/rockerz-450", "platform": "shopify", "page_type": "product", "expect": {"has_price": true}},
+  {"url": "https://www.apple.com/iphone/", "platform": "custom", "page_type": "product", "expect": {"min_words": 300}},
+  {"url": "https://www.nike.com/in/t/air-max-90-shoes", "platform": "custom", "page_type": "product", "expect": {"has_price": true}},
+  {"url": "https://www.amazon.in/dp/B0BDJ1YQ8Y", "platform": "amazon", "page_type": "product", "expect": {"has_reviews": true}},
+  {"url": "https://www.flipkart.com/", "platform": "custom", "page_type": "homepage", "expect": {"detected_page_type": "homepage"}},
+  {"url": "https://www.myntra.com/", "platform": "custom", "page_type": "homepage", "expect": {"detected_page_type": "homepage"}},
+  {"url": "https://fitpass.co.in/", "platform": "custom", "page_type": "homepage", "expect": {"detected_page_type": "homepage"}},
+  {"url": "https://www.cult.fit/", "platform": "custom", "page_type": "homepage", "expect": {"min_words": 150}}
+]

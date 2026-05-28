@@ -18,7 +18,8 @@ import time
 from app.agents.claude_client import claude
 from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
-from app.agents.state import AgentState
+from app.agents.extraction_confidence import score_extraction_confidence
+from app.agents.state import AgentState, state_dict
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -108,14 +109,22 @@ async def extractor_agent(state: AgentState) -> AgentState:
     if parse_err:
         return {"errors": [parse_err]}
 
+    extraction_confidence = score_extraction_confidence(
+        structured_data,
+        scrape_validation=state_dict(state, "scrape_validation"),
+    )
+    structured_data["_extraction_confidence"] = extraction_confidence
+
     logger.info(
         "extractor_agent.done",
         product=structured_data.get("product_name"),
+        confidence=extraction_confidence.get("overall_extraction_confidence"),
         duration_ms=duration_ms,
     )
 
     return {
         "json_structured_data": structured_data,
+        "extraction_confidence": extraction_confidence,
         "agent_reports": [
             {
                 "agent": "extractor_agent",

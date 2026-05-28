@@ -71,7 +71,16 @@
             const topDom = data.dom_technical_seo || {};
             const hasTop = topDom.title_tag || topDom.meta_description;
             const dom = hasTop ? topDom : (Object.keys(nestedDom).length ? nestedDom : topDom);
-            return { ...data, dom_technical_seo: dom };
+            const auditRel = data.audit_reliability || jsd._audit_reliability || {};
+            const runAnalytics = data.run_analytics || jsd._run_analytics || {};
+            return { ...data, dom_technical_seo: dom, audit_reliability: auditRel, run_analytics: runAnalytics };
+        }
+
+        function reliabilityTone(level) {
+            const l = (level || '').toLowerCase();
+            if (l === 'high') return { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-800', dot: 'bg-emerald-500' };
+            if (l === 'medium') return { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-900', dot: 'bg-amber-500' };
+            return { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-900', dot: 'bg-red-500' };
         }
 
         function getAuthErrorMessage(code) {

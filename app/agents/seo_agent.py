@@ -14,6 +14,7 @@ from app.agents.competitor_discovery import resolve_homepage_mode
 from app.agents.context_router import format_context_for_llm
 from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
+from app.agents.scoring_engine import apply_reliability_caps, blend_score, compute_deterministic_scores
 from app.agents.seo_preprocessor import extract_seo_facts
 from app.agents.state import AgentState, state_dict
 from app.core.logging import get_logger
@@ -168,10 +169,22 @@ async def seo_agent(state: AgentState) -> AgentState:
     seo_report = merge_seo_report(facts, llm_layer)
     seo_report = _apply_dom_ground_truth(seo_report, dom_facts)
 
+    det = compute_deterministic_scores(
+        seo_facts=facts,
+        scrape_validation=state_dict(state, "scrape_validation"),
+        extraction_confidence=state_dict(state, "extraction_confidence"),
+    )
+    llm_overall = seo_report.get("overall_seo_score")
+    blended = blend_score(det["deterministic_scores"]["seo"], llm_overall)
+    seo_report["overall_seo_score"] = apply_reliability_caps(blended, dict(state))
+    seo_report["score_source"] = "deterministic_blend"
+    seo_report["deterministic_seo_score"] = det["deterministic_scores"]["seo"]
+
     logger.info("seo_agent.done", score=seo_report.get("overall_seo_score"), duration_ms=duration_ms)
 
     return {
         "seo_report": seo_report,
+        "deterministic_scores": det,
         "agent_reports": [
             {
                 "agent": "seo_agent",

@@ -16,6 +16,7 @@ import time
 from app.agents.claude_client import claude
 from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
+from app.agents.scoring_engine import apply_reliability_caps
 from app.agents.state import AgentState, state_dict
 from app.core.logging import get_logger
 
@@ -117,6 +118,31 @@ Quick wins = high impact + low effort. Long term = high impact + high effort."""
     final_diagnosis, parse_err = safe_json_parse_report(raw, "prioritization_agent")
     if parse_err:
         return {"errors": [parse_err]}
+
+    vr = state_dict(state, "validation_report")
+    det = state_dict(state, "deterministic_scores").get("deterministic_scores") or {}
+    sb = final_diagnosis.setdefault("score_breakdown", {})
+    if seo.get("overall_seo_score") is not None:
+        sb["seo"] = seo.get("overall_seo_score")
+    if aeo.get("ai_visibility_score") is not None:
+        sb["ai_visibility"] = aeo.get("ai_visibility_score")
+    if ux.get("conversion_score") is not None:
+        sb["ux_conversion"] = ux.get("conversion_score")
+    if det:
+        sb["deterministic_seo"] = det.get("seo")
+        sb["deterministic_ux"] = det.get("ux")
+    llm_health = final_diagnosis.get("overall_health_score")
+    if llm_health is not None:
+        capped = apply_reliability_caps(float(llm_health), dict(state))
+        if vr.get("report_reliability") == "low":
+            capped = min(capped, 5.5)
+        elif vr.get("hallucination_risk") == "high":
+            capped = min(capped, 6.0)
+        final_diagnosis["overall_health_score"] = capped
+        final_diagnosis["score_capped_for_reliability"] = capped != llm_health
+    rel = state.get("audit_reliability") or {}
+    if rel:
+        final_diagnosis["audit_reliability"] = rel
 
     logger.info(
         "prioritization_agent.done",

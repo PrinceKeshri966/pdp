@@ -130,6 +130,8 @@ async def get_analysis_report(
         final_diagnosis=report.final_diagnosis or {},
         autofix_report=report.autofix_report or {},
         generated_content=report.generated_content or {},
+        audit_reliability=jsd.get("_audit_reliability") or {},
+        run_analytics=jsd.get("_run_analytics") or {},
         agent_reports=report.agent_logs or [],
         errors=[report.error_message] if report.error_message else [],
     )

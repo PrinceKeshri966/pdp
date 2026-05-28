@@ -71,7 +71,16 @@
             const topDom = data.dom_technical_seo || {};
             const hasTop = topDom.title_tag || topDom.meta_description;
             const dom = hasTop ? topDom : (Object.keys(nestedDom).length ? nestedDom : topDom);
-            return { ...data, dom_technical_seo: dom };
+            const auditRel = data.audit_reliability || jsd._audit_reliability || {};
+            const runAnalytics = data.run_analytics || jsd._run_analytics || {};
+            return { ...data, dom_technical_seo: dom, audit_reliability: auditRel, run_analytics: runAnalytics };
+        }
+
+        function reliabilityTone(level) {
+            const l = (level || '').toLowerCase();
+            if (l === 'high') return { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-800', dot: 'bg-emerald-500' };
+            if (l === 'medium') return { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-900', dot: 'bg-amber-500' };
+            return { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-900', dot: 'bg-red-500' };
         }
 
         function getAuthErrorMessage(code) {
@@ -800,7 +809,7 @@
             //        VISUALIZER_MODE2 | SUCCESS
             const [view, setView] = useState('HOME');
             const [analyzingText, setAnalyzingText] = useState('');
-            const [analyzingProgress, setAnalyzingProgress] = useState({ completed: 0, total: 10 });
+            const [analyzingProgress, setAnalyzingProgress] = useState({ completed: 0, total: 14 });
 
             // Mode 1 state
             const [urlInput, setUrlInput] = useState('');
@@ -950,7 +959,7 @@
             const runMode1Analysis = async () => {
                 if (!urlInput.trim()) return;
                 setView('ANALYZING');
-                setAnalyzingProgress({ completed: 0, total: 10 });
+                setAnalyzingProgress({ completed: 0, total: 14 });
                 setAnalyzingText('Scraper Agent: Fetching page...');
                 try {
                     const result = await apiStreamAnalyze(
@@ -959,7 +968,7 @@
                         (evt) => {
                             if (evt.label) setAnalyzingText(evt.label);
                             if (evt.completed_count != null) {
-                                setAnalyzingProgress({ completed: evt.completed_count, total: evt.total_count || 10 });
+                                setAnalyzingProgress({ completed: evt.completed_count, total: evt.total_count || 14 });
                             }
                         }
                     );
@@ -1866,6 +1875,8 @@
                                 const diagnosisRpt  = mode1Result?.final_diagnosis   || {};
                                 const autofixRpt    = mode1Result?.autofix_report    || {};
                                 const contentRpt    = mode1Result?.generated_content || {};
+                                const reliability   = mode1Result?.audit_reliability || diagnosisRpt.audit_reliability || {};
+                                const visualUx      = reliability.visual_ux_facts || {};
 
                                 const seoScore    = seoRpt.overall_seo_score    != null ? (seoRpt.overall_seo_score * 10).toFixed(0)    : '--';
                                 const aiVisScore  = aeoRpt.ai_visibility_score  != null ? (aeoRpt.ai_visibility_score * 10).toFixed(0)  : '--';
@@ -2145,6 +2156,74 @@
                                                 )}
                                             </div>
                                         </div>
+
+                                        {(reliability.report_reliability || reliability.scrape_quality) && (() => {
+                                            const relTone = reliabilityTone(reliability.report_reliability);
+                                            const scrapeTone = reliabilityTone(reliability.scrape_quality);
+                                            const extPct = reliability.extraction_confidence_pct ?? Math.round((reliability.extraction_confidence || 0) * 100);
+                                            return (
+                                                <div className={`mb-6 rounded-xl border p-4 ${relTone.bg} ${relTone.border}`}>
+                                                    <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                                                        <div>
+                                                            <p className={`text-sm font-bold ${relTone.text} flex items-center gap-2`}>
+                                                                <span className={`w-2.5 h-2.5 rounded-full ${relTone.dot}`}></span>
+                                                                Audit reliability: {reliability.report_reliability || 'medium'}
+                                                                {reliability.partial_analysis && (
+                                                                    <span className="text-xs font-semibold bg-red-100 text-red-800 px-2 py-0.5 rounded-full ml-1">Partial analysis</span>
+                                                                )}
+                                                            </p>
+                                                            <p className="text-xs text-slate-600 mt-1">Scores are capped when scrape or extraction confidence is low — we avoid overconfident AI claims.</p>
+                                                        </div>
+                                                        {reliability.hallucination_risk && (
+                                                            <span className="text-xs font-bold px-2 py-1 rounded-lg bg-white/80 border border-slate-200">
+                                                                Hallucination risk: {reliability.hallucination_risk}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                                                        <div className={`rounded-lg border p-3 bg-white/70 ${scrapeTone.border}`}>
+                                                            <p className="text-[10px] font-bold uppercase text-slate-500">Scrape quality</p>
+                                                            <p className={`font-black capitalize ${scrapeTone.text}`}>{reliability.scrape_quality || '—'}</p>
+                                                        </div>
+                                                        <div className="rounded-lg border border-slate-200 p-3 bg-white/70">
+                                                            <p className="text-[10px] font-bold uppercase text-slate-500">Extraction confidence</p>
+                                                            <p className="font-black text-slate-900">{extPct}%</p>
+                                                        </div>
+                                                        <div className="rounded-lg border border-slate-200 p-3 bg-white/70">
+                                                            <p className="text-[10px] font-bold uppercase text-slate-500">Page type</p>
+                                                            <p className="font-black capitalize text-slate-900">{reliability.detected_page_type || '—'}</p>
+                                                        </div>
+                                                        <div className="rounded-lg border border-slate-200 p-3 bg-white/70">
+                                                            <p className="text-[10px] font-bold uppercase text-slate-500">JS-heavy</p>
+                                                            <p className="font-black text-slate-900">{reliability.is_js_heavy ? 'Yes' : 'No'}</p>
+                                                        </div>
+                                                    </div>
+                                                    {(reliability.scrape_retry_methods || []).length > 0 && (
+                                                        <p className="text-xs text-slate-600 mt-2">
+                                                            <i className="ph ph-arrows-clockwise"></i> Retried scrape via: {reliability.scrape_retry_methods.join(', ')}
+                                                        </p>
+                                                    )}
+                                                    {visualUx.capture_ok && (
+                                                        <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                                                            {visualUx.cta_above_fold && <span className="bg-white border rounded-full px-2 py-1">CTA above fold</span>}
+                                                            {visualUx.sticky_cta_detected && <span className="bg-white border rounded-full px-2 py-1">Sticky CTA</span>}
+                                                            {visualUx.trust_badges_visible && <span className="bg-white border rounded-full px-2 py-1">Trust badges visible</span>}
+                                                            {visualUx.mobile_layout_quality && <span className="bg-white border rounded-full px-2 py-1">Mobile: {visualUx.mobile_layout_quality}</span>}
+                                                        </div>
+                                                    )}
+                                                    {(reliability.warnings || []).length > 0 && (
+                                                        <ul className="mt-3 space-y-1 text-xs text-slate-700 list-disc list-inside">
+                                                            {(reliability.warnings || []).slice(0, 6).map((w, i) => <li key={i}>{w}</li>)}
+                                                        </ul>
+                                                    )}
+                                                    {(reliability.contradictions || []).length > 0 && (
+                                                        <div className="mt-2 text-xs text-amber-900 bg-amber-100/60 border border-amber-200 rounded-lg p-2">
+                                                            <strong>Cross-check notes:</strong> {(reliability.contradictions || []).join(' · ')}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })()}
 
                                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
                                             <div className="bg-white p-3 border border-slate-200 rounded-xl border-t-4 border-t-yellow-400">
