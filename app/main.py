@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from app.api.routes import analyze, auth, chat, reports, screenshot
 from app.core.config import get_settings
-from app.core.playwright_env import playwright_enabled
+from app.core.playwright_env import screenshot_service_available
 from app.core.database import init_db
 from app.core.logging import get_logger, setup_logging
 
@@ -105,7 +105,8 @@ def create_app() -> FastAPI:
             "google_login_url": "/api/v1/auth/google/login",
             "auth_required": provider != "none"
                 or not (settings.dev_auth_bypass and settings.app_env == "development"),
-            "screenshot_available": playwright_enabled(),
+            "screenshot_available": screenshot_service_available(settings.screenshot_api_url),
+            "screenshot_api_base": settings.screenshot_api_url.rstrip("/"),
         }
 
     # ── Serve the React frontend at / ─────────────────────────────────────────

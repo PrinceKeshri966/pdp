@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.core.config import get_settings
-from app.core.playwright_env import playwright_enabled
+from app.core.playwright_env import screenshot_service_available
 
 settings = get_settings()
 
@@ -109,7 +109,8 @@ async def frontend_config() -> dict[str, str | bool]:
         "google_login_url": "/api/v1/auth/google/login",
         "auth_required": provider != "none"
         or not (settings.dev_auth_bypass and settings.app_env == "development"),
-        "screenshot_available": playwright_enabled(),
+        "screenshot_available": screenshot_service_available(settings.screenshot_api_url),
+        "screenshot_api_base": settings.screenshot_api_url.rstrip("/"),
     }
 
 

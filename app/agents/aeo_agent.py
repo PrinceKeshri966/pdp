@@ -15,6 +15,8 @@ from __future__ import annotations
 import time
 
 from app.agents.claude_client import claude
+from app.agents.competitor_discovery import resolve_homepage_mode
+from app.agents.context_router import format_context_for_llm
 from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
 from app.agents.state import AgentState, state_dict
@@ -95,27 +97,34 @@ Required JSON schema (based on Google AI Optimization Guide + E-E-A-T framework)
 
 async def aeo_agent(state: AgentState) -> AgentState:
     """Analyze AI/LLM visibility and answer engine optimization."""
-    markdown = state.get("markdown_content", "")
-    structured = state_dict(state, "json_structured_data")
+    packages = state.get("agent_context_packages") or {}
+    aeo_ctx = packages.get("aeo")
+    if not aeo_ctx:
+        return {"errors": ["aeo_agent: no agent_context_packages.aeo"]}
 
-    if not markdown:
-        return {"errors": ["aeo_agent: no markdown_content"]}
+    structured = state_dict(state, "json_structured_data")
 
     logger.info("aeo_agent.start", model=_MODEL)
     t0 = time.monotonic()
 
-    user_message = f"""Analyze this product page for AI answer engine visibility (AEO/GEO):
+    page_url = state.get("url") or ""
+    homepage_mode = resolve_homepage_mode(page_url, state.get("compare_as"))
+    page_note = (
+        "Page type: HOMEPAGE. Missing Product schema is normal; score Organization/WebSite/FAQ schema instead.\n\n"
+        if homepage_mode
+        else ""
+    )
+
+    user_message = f"""{page_note}Analyze this page for AI answer engine visibility (AEO/GEO):
 
 Product Data:
 {structured}
 
-Page Content (first 6000 chars):
-{markdown[:6000]}
+AEO context package (main + faq + about when available):
+{format_context_for_llm(aeo_ctx)}
 
-Evaluate: E-E-A-T signals (experience, expertise, authority, trust), RAG-readiness
-(is this citable unique content or commodity?), FAQ quality, all structured data types
-(Product/FAQ/Breadcrumb/Review/Speakable schema), conversational language readiness,
-brand clarity, and which AI queries this page would miss.""".strip()
+Evaluate: E-E-A-T signals, RAG-readiness, FAQ quality, structured data types,
+conversational language readiness, brand clarity, and which AI queries this page would miss.""".strip()
 
     response = await claude.messages.create(
         model=_MODEL,

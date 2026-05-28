@@ -1,4 +1,8 @@
-"""Discover real competitor URLs via Jina search — homepage vs product page aware."""
+"""
+app/agents/competitor_discovery.py
+
+Discover real market category competitor URLs via context-aware Jina search execution lines.
+"""
 from __future__ import annotations
 
 import re
@@ -25,6 +29,23 @@ _SKIP_DOMAINS = {
     "flipkart.com",
     "wikipedia.org",
 }
+# Unrelated mega-brands when comparing D2C / retail / electronics homepages
+_UNRELATED_RETAIL_COMPETITORS = frozenset({
+    "meta.com",
+    "about.meta.com",
+    "meta.ai",
+    "facebook.com",
+    "instagram.com",
+    "threads.com",
+    "threads.net",
+    "microsoft.com",
+    "linkedin.com",
+    "twitter.com",
+    "x.com",
+    "youtube.com",
+    "google.com",
+    "wikipedia.org",
+})
 _PRODUCT_PATH_MARKERS = ("/product", "/products/", "/p/", "/dp/", "/item/", "/buy", "/shop/")
 
 
@@ -36,7 +57,7 @@ def _domain(url: str) -> str:
 
 
 def resolve_homepage_mode(user_url: str, compare_as: str | None = None) -> bool:
-    """Resolve whether to compare homepages from user preference or URL auto-detect."""
+    """Evaluate layout configuration routing matrices to determine verification level."""
     mode = (compare_as or "auto").lower().strip()
     if mode == "homepage":
         return True
@@ -46,7 +67,7 @@ def resolve_homepage_mode(user_url: str, compare_as: str | None = None) -> bool:
 
 
 def is_homepage_url(url: str) -> bool:
-    """True when the user URL is a site homepage, not a product/detail page."""
+    """Validate resource depth strings to ensure location context boundaries match root hierarchies."""
     try:
         raw = url if url.startswith("http") else f"https://{url}"
         u = urlparse(raw)
@@ -63,17 +84,35 @@ def is_homepage_url(url: str) -> bool:
 
 
 def to_site_root(url: str) -> str:
+    """Truncate complex address paths down to top-level secure domains safely."""
     u = urlparse(url if url.startswith("http") else f"https://{url}")
     scheme = u.scheme or "https"
     netloc = u.netloc
     return f"{scheme}://{netloc}/"
 
 
+def _is_main_brand_site(url: str, *, homepage_mode: bool) -> bool:
+    """Skip blog/store subdomains when comparing homepage competitors."""
+    if not homepage_mode:
+        return True
+    u = urlparse(url if url.startswith("http") else f"https://{url}")
+    dom = u.netloc.lower().replace("www.", "")
+    path = (u.path or "/").strip().rstrip("/") or "/"
+    if path != "/":
+        return False
+    if dom.startswith(("blog.", "shop.", "store.", "m.", "app.", "news.")):
+        return False
+    if any(x in dom for x in (".blog.", ".shop.")):
+        return False
+    return True
+
+
 def _is_productish(url: str) -> bool:
+    """Confirm location extensions describe conversion endpoints vs asset files."""
     low = url.lower()
     if any(ext in low for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg")):
         return False
-    if "nykaa.com/media/" in low or "/media/catalog/" in low:
+    if "/media/" in low or "/catalog/" in low:
         return False
     path = urlparse(url).path.lower()
     if path in ("", "/"):
@@ -84,6 +123,7 @@ def _is_productish(url: str) -> bool:
 
 
 def _url_score(url: str, *, homepage_mode: bool) -> int:
+    """Calculate contextual weights to optimize engine placement hierarchies."""
     path = urlparse(url).path.lower()
     if homepage_mode:
         if path in ("", "/"):
@@ -100,6 +140,7 @@ def _url_score(url: str, *, homepage_mode: bool) -> int:
 
 
 def _extract_urls(text: str) -> list[str]:
+    """Isolate clean web nodes from textual target outputs completely."""
     ordered: list[str] = []
     seen: set[str] = set()
     for pattern in (_SOURCE_RE, _LINK_RE):
@@ -111,6 +152,63 @@ def _extract_urls(text: str) -> list[str]:
     return ordered
 
 
+def _brand_from_domain(user_domain: str) -> str:
+    """e.g. boat-lifestyle.com → boat lifestyle (avoid ambiguous single token 'boat')."""
+    base = (user_domain or "").split(".")[0].replace("www.", "")
+    return base.replace("-", " ").strip()
+
+
+def _detect_vertical(
+    *,
+    categories: list[str],
+    user_domain: str,
+    product_name: str,
+) -> str:
+    blob = " ".join(categories + [_brand_from_domain(user_domain), product_name or "", user_domain]).lower()
+    if any(
+        m in blob
+        for m in ("fitness", "gym", "workout", "fitpass", "nutrition", "yoga", "cult.fit")
+    ):
+        return "fitness"
+    if any(
+        m in blob
+        for m in (
+            "audio",
+            "earbud",
+            "earphone",
+            "speaker",
+            "watch",
+            "wearable",
+            "electronics",
+            "lifestyle",
+            "boat",
+            "noise",
+            "fire-boltt",
+            "boltt",
+            "smartwatch",
+        )
+    ):
+        return "electronics"
+    if any(m in blob for m in ("fashion", "apparel", "clothing", "beauty", "skincare", "cosmetic")):
+        return "fashion"
+    return "general"
+
+
+def _is_irrelevant_competitor(user_domain: str, candidate_domain: str, vertical: str) -> bool:
+    if not candidate_domain or candidate_domain == user_domain:
+        return True
+    if candidate_domain in _SKIP_DOMAINS:
+        return True
+    if vertical in ("electronics", "fashion", "fitness", "general"):
+        if candidate_domain in _UNRELATED_RETAIL_COMPETITORS:
+            return True
+        if "meta" in candidate_domain and "meta" not in user_domain:
+            return True
+        if candidate_domain.startswith(("about.", "blog.", "shop.")) and vertical == "electronics":
+            return True
+    return False
+
+
 def _search_queries(
     *,
     homepage_mode: bool,
@@ -118,18 +216,69 @@ def _search_queries(
     categories: list[str],
     user_domain: str,
 ) -> list[str]:
-    cat = (categories[-1] if categories else "") or "beauty"
-    name = (product_name or cat).split("|")[0].strip()[:60]
-    brand = user_domain.split(".")[0].replace("-", " ").strip() if user_domain else ""
+    """Build highly distinct contextual queries dynamically using processed semantic attributes."""
+    # Clean out platform-generic navigation values dynamically
+    sanitized_categories = [
+        c.strip() for c in categories 
+        if c.lower() not in ("home", "product", "products", "all", "services", "app", "mobile app")
+    ]
+    
+    # Resolve product business focus category directly
+    if sanitized_categories:
+        cat_context = sanitized_categories[-1]
+    elif product_name:
+        cat_context = product_name.split("-")[0].split("|")[0].strip()
+    else:
+        cat_context = "e-commerce marketplace"
+
+    name_clean = (product_name or cat_context).split("-")[0].split("|")[0].strip()[:50]
+    brand_context = _brand_from_domain(user_domain)
+    vertical = _detect_vertical(
+        categories=categories,
+        user_domain=user_domain,
+        product_name=product_name,
+    )
+
     if homepage_mode:
+        if vertical == "fitness":
+            return [
+                "cult.fit official website india gym membership",
+                "fittr.com fitness coaching app india",
+                "healthifyme.com official website india",
+                f"gym membership app india alternatives to {brand_context or 'fitpass'}",
+            ]
+        if vertical == "electronics":
+            b = brand_context or name_clean or "audio brand"
+            return [
+                f"noise.com official website india earbuds",
+                f"fire-boltt.com india smartwatch audio official",
+                f"best {b} competitors india consumer electronics brand website",
+                f"india D2C audio wearable brands like {b} official homepage",
+            ]
+        if vertical == "fashion":
+            b = brand_context or name_clean
+            return [
+                f"nykaa fashion brand india official website competitors",
+                f"mamaearth official website india beauty brand",
+                f"best {b} alternatives india D2C fashion brand homepage",
+            ]
         queries = [
-            f"{cat} beauty brand india official website",
-            f"skincare cosmetics online store india",
+            f"top alternative brands to {brand_context or name_clean} india official website",
+            f"best {cat_context} brands india D2C official homepage",
         ]
-        if brand:
-            queries.append(f"brands like {brand} india beauty ecommerce")
+        if brand_context:
+            queries.append(f"direct competitors of {brand_context} india same industry official site")
         return queries
-    return [f"buy {name} {cat} online india"]
+
+    if vertical == "electronics":
+        return [
+            f"buy {name_clean} earbuds alternatives india product page",
+            f"competing {cat_context} audio product PDP india",
+        ]
+    return [
+        f"buy {name_clean} alternatives online india",
+        f"top competing {cat_context} product pages in india",
+    ]
 
 
 async def discover_competitor_urls(
@@ -141,6 +290,7 @@ async def discover_competitor_urls(
     limit: int = 3,
     homepage_mode: bool | None = None,
 ) -> list[str]:
+    """Execute live external crawling strategies to retrieve localized competing assets accurately."""
     settings = get_settings()
     user_domain = _domain(user_url)
     if homepage_mode is None:
@@ -162,6 +312,11 @@ async def discover_competitor_urls(
     if settings.jina_api_key.strip():
         headers["Authorization"] = f"Bearer {settings.jina_api_key.strip()}"
 
+    vertical = _detect_vertical(
+        categories=categories,
+        user_domain=user_domain,
+        product_name=product_name,
+    )
     queries = _search_queries(
         homepage_mode=homepage_mode,
         product_name=product_name,
@@ -185,10 +340,14 @@ async def discover_competitor_urls(
                     dom = _domain(url)
                     if not dom or dom in seen_domains or dom == user_domain:
                         continue
+                    if _is_irrelevant_competitor(user_domain, dom, vertical):
+                        continue
                     if any(dom == s or dom.endswith("." + s) for s in _SKIP_DOMAINS):
                         continue
                     if homepage_mode:
                         norm = to_site_root(url)
+                        if not _is_main_brand_site(norm, homepage_mode=True):
+                            continue
                     else:
                         if not _is_productish(url):
                             continue

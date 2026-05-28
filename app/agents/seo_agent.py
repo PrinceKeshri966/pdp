@@ -1,21 +1,20 @@
 """
 app/agents/seo_agent.py
 
-SEOAgent  (Mode 1 – Node 2)   Model: Claude Haiku (fast)
-──────────────────────────────────────────────────────────
-Receives the raw Markdown from ScraperAgent, extracts structured
-SEO signals, and stores a JSON report in state["seo_report"].
-
-Uses the Anthropic SDK directly (AsyncAnthropic.messages.create).
+SEOAgent — deterministic facts from seo_preprocessor; Claude for semantic reasoning only.
 """
 from __future__ import annotations
 
 import json
 import time
+from typing import Any
 
 from app.agents.claude_client import claude
+from app.agents.competitor_discovery import resolve_homepage_mode
+from app.agents.context_router import format_context_for_llm
 from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
+from app.agents.seo_preprocessor import extract_seo_facts
 from app.agents.state import AgentState, state_dict
 from app.core.logging import get_logger
 
@@ -24,98 +23,22 @@ logger = get_logger(__name__)
 _MODEL = get_model("seo")
 
 _SYSTEM_PROMPT = """
-You are an expert e-commerce SEO analyst following Google Search Essentials and
-Semrush/Ahrefs industry standards.
-Analyse the provided product page Markdown and return ONLY a valid JSON object.
-No prose, no markdown fences, no explanation – raw JSON only.
+You are an expert e-commerce SEO strategist. Deterministic SEO metrics are ALREADY
+extracted in PRECOMPUTED_SEO_FACTS — do NOT recount headings, links, schema, word counts,
+or title/meta lengths.
 
-Required JSON schema:
+Your job: semantic reasoning ONLY. Return ONLY valid JSON (no markdown fences).
+
 {
-  "title_tag": {
-    "value": string,
-    "length": int,
-    "score": float (0-10),
-    "issues": [string]
-  },
-  "meta_description": {
-    "value": string,
-    "length": int,
-    "has_cta": boolean,
-    "score": float (0-10),
-    "issues": [string]
-  },
-  "h1": {
-    "value": string,
-    "count": int,
-    "score": float (0-10),
-    "issues": [string]
-  },
-  "headings_structure": {
-    "h2_count": int,
-    "h3_count": int,
-    "logical_hierarchy": boolean,
-    "keyword_in_headings": boolean,
-    "score": float (0-10)
-  },
   "keyword_analysis": {
     "primary_keyword": string,
     "secondary_keywords": [string],
-    "density_pct": float,
-    "in_title": boolean,
-    "in_h1": boolean,
-    "in_meta_description": boolean,
-    "in_first_100_words": boolean,
+    "search_intent": "informational|commercial|transactional|navigational",
+    "intent_gaps": [string],
     "score": float (0-10)
   },
-  "content_quality": {
-    "word_count": int,
-    "readability": "poor|average|good|excellent",
-    "thin_content": boolean,
-    "duplicate_content_risk": boolean,
-    "score": float (0-10)
-  },
-  "image_seo": {
-    "total_images": int,
-    "missing_alt": int,
-    "descriptive_alt": int,
-    "score": float (0-10)
-  },
-  "structured_data": {
-    "detected": boolean,
-    "types": [string],
-    "has_product_schema": boolean,
-    "has_review_schema": boolean,
-    "has_breadcrumb_schema": boolean,
-    "score": float (0-10)
-  },
-  "links": {
-    "internal_count": int,
-    "external_count": int,
-    "broken_links_risk": boolean,
-    "score": float (0-10)
-  },
-  "technical_seo": {
-    "canonical_present": boolean,
-    "open_graph_present": boolean,
-    "twitter_card_present": boolean,
-    "hreflang_present": boolean,
-    "mobile_friendly": boolean,
-    "core_web_vitals_risk": "low|medium|high",
-    "page_speed_signals": {
-      "large_images_detected": boolean,
-      "render_blocking_scripts": boolean,
-      "lazy_loading_used": boolean,
-      "estimated_lcp_risk": "low|medium|high",
-      "estimated_cls_risk": "low|medium|high"
-    },
-    "pagination_signals": boolean,
-    "score": float (0-10)
-  },
-  "url_structure": {
-    "is_seo_friendly": boolean,
-    "has_keyword": boolean,
-    "issues": [string]
-  },
+  "semantic_content_issues": [string],
+  "url_structure_issues": [string],
   "overall_seo_score": float (0-10),
   "top_issues": [string],
   "quick_wins": [string]
@@ -123,41 +46,129 @@ Required JSON schema:
 """.strip()
 
 
+def _avg_section_scores(facts: dict[str, Any]) -> float:
+    keys = ("title_tag", "meta_description", "h1", "headings_structure", "keyword_analysis",
+            "content_quality", "image_seo", "structured_data", "links", "technical_seo")
+    scores = [facts[k]["score"] for k in keys if isinstance(facts.get(k), dict) and facts[k].get("score") is not None]
+    return round(sum(scores) / len(scores), 1) if scores else 5.0
+
+
+def merge_seo_report(facts: dict[str, Any], llm: dict[str, Any]) -> dict[str, Any]:
+    """Merge Python-extracted facts with Claude semantic layer for frontend compatibility."""
+    report = {k: v for k, v in facts.items() if k != "_deterministic"}
+    ka_facts = dict(report.get("keyword_analysis") or {})
+    ka_llm = llm.get("keyword_analysis") or {}
+    report["keyword_analysis"] = {
+        **ka_facts,
+        "primary_keyword": ka_llm.get("primary_keyword") or ka_facts.get("primary_keyword", ""),
+        "secondary_keywords": ka_llm.get("secondary_keywords") or ka_facts.get("secondary_keywords", []),
+        "density_pct": ka_facts.get("density_pct", 0),
+        "in_title": ka_facts.get("in_title", False),
+        "in_h1": ka_facts.get("in_h1", False),
+        "in_meta_description": ka_facts.get("in_meta_description", False),
+        "in_first_100_words": ka_facts.get("in_first_100_words", False),
+        "search_intent": ka_llm.get("search_intent"),
+        "intent_gaps": ka_llm.get("intent_gaps", []),
+        "score": ka_llm.get("score") if ka_llm.get("score") is not None else ka_facts.get("score", 5.0),
+    }
+    url = report.setdefault("url_structure", {})
+    url["issues"] = list(llm.get("url_structure_issues") or url.get("issues") or [])
+    report["overall_seo_score"] = llm.get("overall_seo_score") if llm.get("overall_seo_score") is not None else _avg_section_scores(report)
+    report["top_issues"] = llm.get("top_issues") or []
+    for issue in llm.get("semantic_content_issues") or []:
+        if issue not in report["top_issues"]:
+            report["top_issues"].append(issue)
+    report["quick_wins"] = llm.get("quick_wins") or []
+    return report
+
+
+def _apply_dom_ground_truth(seo_report: dict, dom_facts: dict) -> dict:
+    if not dom_facts:
+        return seo_report
+    title_val = dom_facts.get("title_tag")
+    if title_val:
+        title_block = seo_report.setdefault("title_tag", {})
+        title_block["value"] = title_val
+        title_block["length"] = len(title_val)
+    meta_val = dom_facts.get("meta_description")
+    if meta_val is not None:
+        meta_block = seo_report.setdefault("meta_description", {})
+        meta_block["value"] = meta_val
+        meta_block["length"] = len(meta_val)
+    tech = seo_report.setdefault("technical_seo", {})
+    if "canonical_present" in dom_facts:
+        tech["canonical_present"] = bool(dom_facts["canonical_present"])
+    if "open_graph_present" in dom_facts:
+        tech["open_graph_present"] = bool(dom_facts["open_graph_present"])
+    structured = seo_report.setdefault("structured_data", {})
+    if dom_facts.get("product_schema_present"):
+        structured["has_product_schema"] = True
+        structured["detected"] = True
+        types = structured.setdefault("types", [])
+        if "Product" not in types:
+            types.append("Product")
+    if dom_facts.get("faq_schema_present"):
+        structured["has_faq_schema"] = True
+        structured["detected"] = True
+        types = structured.setdefault("types", [])
+        if "FAQPage" not in types:
+            types.append("FAQPage")
+    return seo_report
+
+
 async def seo_agent(state: AgentState) -> AgentState:
-    """Analyse Markdown for SEO and append structured report to state."""
-    markdown = state.get("markdown_content", "")
-    if not markdown:
-        return {"errors": ["seo_agent: no markdown_content"]}
+    packages = state.get("agent_context_packages") or {}
+    seo_ctx = packages.get("seo")
+    if not seo_ctx:
+        return {"errors": ["seo_agent: no agent_context_packages.seo"]}
+
+    dom_facts = state_dict(state, "dom_technical_seo")
+    facts = state.get("seo_preprocessor_facts") or extract_seo_facts(
+        url=state.get("url") or "",
+        markdown=state.get("markdown_content") or "",
+        scrape_html=state.get("scrape_html") or "",
+        dom_technical_seo=dom_facts,
+        page_main_summary=(state.get("page_contexts") or {}).get("main"),
+    )
 
     structured = state_dict(state, "json_structured_data")
+    page_url = state.get("url") or ""
+    homepage_mode = resolve_homepage_mode(page_url, state.get("compare_as"))
 
-    logger.info("seo_agent.start", model=_MODEL, chars=len(markdown))
+    logger.info("seo_agent.start", model=_MODEL, precomputed=True)
     t0 = time.monotonic()
 
     user_message = (
-        f"Product structured data:\n{json.dumps(structured, indent=2)}\n\n"
-        f"Raw page Markdown (for tag/heading analysis):\n{markdown[:6000]}"
+        "PRECOMPUTED_SEO_FACTS (ground truth — do not contradict):\n"
+        f"{json.dumps({k: v for k, v in facts.items() if k != '_deterministic'}, separators=(',', ':'))}\n\n"
+        + (
+            "Page type: HOMEPAGE — missing Product schema is expected; do not flag it as top_issue.\n\n"
+            if homepage_mode
+            else ""
+        )
+        + f"Product extractor summary:\n{json.dumps(structured, separators=(',', ':'))[:2000]}\n\n"
+        + "SEO context package:\n"
+        + format_context_for_llm(seo_ctx, max_chars=2500)
+        + "\n\nProvide search intent, intent gaps, semantic issues, and prioritized recommendations."
     )
 
     response = await claude.messages.create(
         model=_MODEL,
-        max_tokens=4096,
+        max_tokens=1536,
         system=_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )
 
     raw = response.content[0].text.strip()
     duration_ms = int((time.monotonic() - t0) * 1000)
-
-    seo_report, parse_err = safe_json_parse_report(raw, "seo_agent")
+    llm_layer, parse_err = safe_json_parse_report(raw, "seo_agent")
     if parse_err:
         return {"errors": [parse_err]}
 
-    logger.info(
-        "seo_agent.done",
-        score=seo_report.get("overall_seo_score"),
-        duration_ms=duration_ms,
-    )
+    seo_report = merge_seo_report(facts, llm_layer)
+    seo_report = _apply_dom_ground_truth(seo_report, dom_facts)
+
+    logger.info("seo_agent.done", score=seo_report.get("overall_seo_score"), duration_ms=duration_ms)
 
     return {
         "seo_report": seo_report,
@@ -165,7 +176,7 @@ async def seo_agent(state: AgentState) -> AgentState:
             {
                 "agent": "seo_agent",
                 "model": _MODEL,
-                "input": {"markdown_chars": len(markdown), "markdown_preview": markdown[:400]},
+                "input": {"preprocessor": True, "context_package": "seo"},
                 "output": seo_report,
                 "duration_ms": duration_ms,
                 "input_tokens": response.usage.input_tokens,

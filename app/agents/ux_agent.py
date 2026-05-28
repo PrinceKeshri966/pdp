@@ -1,99 +1,52 @@
 """
 app/agents/ux_agent.py
 
-UXAgent  (Mode 1 – Phase 2, Parallel)   Model: Claude Haiku
-─────────────────────────────────────────────────────────────
-Analyzes PDP UX and conversion optimization signals.
-Checks CTA placement, trust signals, mobile UX, storytelling,
-urgency patterns, and visual hierarchy.
+UXAgent — deterministic UX facts + Claude for CRO reasoning only.
 """
 from __future__ import annotations
 
+import json
 import time
+from typing import Any
 
 from app.agents.claude_client import claude
+from app.agents.competitor_discovery import resolve_homepage_mode
+from app.agents.context_router import format_context_for_llm
 from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
 from app.agents.state import AgentState, state_dict
+from app.agents.ux_preprocessor import extract_ux_facts
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-_MODEL = get_model("seo")  # Haiku
+_MODEL = get_model("seo")
 
 _SYSTEM_PROMPT = """
-You are an expert in e-commerce UX and Conversion Rate Optimization (CRO),
-following Baymard Institute research standards (world's largest e-commerce UX research).
-Analyze the product page content for conversion effectiveness.
+You are an e-commerce CRO expert (Baymard Institute standards).
+PRECOMPUTED_UX_FACTS already list CTAs, trust badges, shipping/returns visibility, etc.
+Do NOT re-detect those booleans.
 
-Return ONLY a valid JSON object — no prose, no markdown fences.
-
-Required JSON schema (Baymard Institute + Nielsen Norman Group standards):
+Return ONLY valid JSON:
 {
   "conversion_score": float (0-10),
+  "friction_points": [string],
+  "conversion_blockers": [string],
   "cta_analysis": {
-    "found": boolean,
-    "above_fold": boolean,
-    "sticky_on_scroll": boolean,
     "text_quality": "weak|average|strong",
-    "color_contrast": "poor|adequate|strong",
-    "multiple_ctas": boolean,
+    "above_fold": boolean,
     "score": float (0-10)
-  },
-  "product_imagery": {
-    "multiple_angles": boolean,
-    "zoom_capability": boolean,
-    "lifestyle_images": boolean,
-    "video_present": boolean,
-    "image_count_adequate": boolean,
-    "score": float (0-10)
-  },
-  "trust_signals": {
-    "reviews_present": boolean,
-    "rating_visible": boolean,
-    "review_count_visible": boolean,
-    "verified_purchase_badges": boolean,
-    "security_badges": boolean,
-    "payment_icons": boolean,
-    "return_policy_visible": boolean,
-    "shipping_info_visible": boolean,
-    "money_back_guarantee": boolean,
-    "score": float (0-10)
-  },
-  "product_information": {
-    "size_guide_present": boolean,
-    "material_composition": boolean,
-    "care_instructions": boolean,
-    "fit_description": boolean,
-    "specifications_table": boolean,
-    "score": float (0-10)
-  },
-  "mobile_ux": {
-    "score": float (0-10),
-    "issues": [string]
   },
   "page_layout": {
     "above_fold_content": "poor|adequate|excellent",
     "visual_hierarchy": "poor|adequate|excellent",
-    "whitespace_usage": "poor|adequate|excellent",
     "score": float (0-10)
   },
   "storytelling": {
-    "has_brand_story": boolean,
-    "has_lifestyle_content": boolean,
     "emotional_appeal": "none|weak|moderate|strong",
     "score": float (0-10)
   },
-  "urgency_scarcity": {
-    "stock_counter": boolean,
-    "limited_time_offer": boolean,
-    "social_proof_counter": boolean,
-    "recently_viewed_count": boolean,
-    "score": float (0-10)
-  },
   "checkout_friction": {
-    "guest_checkout_implied": boolean,
-    "one_click_buy": boolean,
     "cart_abandonment_risk": "low|medium|high",
     "score": float (0-10)
   },
@@ -102,51 +55,122 @@ Required JSON schema (Baymard Institute + Nielsen Norman Group standards):
 """.strip()
 
 
-async def ux_agent(state: AgentState) -> AgentState:
-    """Analyze UX and conversion optimization signals."""
-    markdown = state.get("markdown_content", "")
-    structured = state_dict(state, "json_structured_data")
+def merge_ux_report(facts: dict[str, Any], llm: dict[str, Any]) -> dict[str, Any]:
+    ctas = facts.get("cta_candidates") or []
+    trust_n = len(facts.get("trust_badges") or [])
+    trust_score = min(10.0, 4.0 + trust_n * 0.8) if trust_n else 3.0
 
-    if not markdown:
-        return {"errors": ["ux_agent: no markdown_content"]}
+    return {
+        "conversion_score": llm.get("conversion_score", 6.0),
+        "cta_analysis": {
+            "found": facts.get("cta_count", 0) > 0,
+            "above_fold": bool(facts.get("above_fold_cta")) or llm.get("cta_analysis", {}).get("above_fold", False),
+            "sticky_on_scroll": False,
+            "text_quality": (llm.get("cta_analysis") or {}).get("text_quality", "average"),
+            "color_contrast": "adequate",
+            "multiple_ctas": facts.get("cta_count", 0) > 1,
+            "score": (llm.get("cta_analysis") or {}).get("score", 6.0),
+        },
+        "product_imagery": {
+            "multiple_angles": facts.get("images_count", 0) > 2,
+            "zoom_capability": False,
+            "lifestyle_images": False,
+            "video_present": facts.get("has_video", False),
+            "image_count_adequate": facts.get("images_count", 0) >= 3,
+            "score": min(10.0, facts.get("images_count", 0) * 1.5) if facts.get("images_count") else 4.0,
+        },
+        "trust_signals": {
+            "reviews_present": facts.get("reviews_visible", False),
+            "rating_visible": facts.get("avg_rating_visible", False),
+            "review_count_visible": facts.get("review_count_visible", False),
+            "verified_purchase_badges": False,
+            "security_badges": facts.get("security_badges", False),
+            "payment_icons": bool(facts.get("payment_mentions")),
+            "return_policy_visible": facts.get("return_policy_visible", False),
+            "shipping_info_visible": facts.get("shipping_visible", False),
+            "money_back_guarantee": facts.get("money_back_guarantee", False),
+            "score": round(trust_score, 1),
+        },
+        "product_information": {
+            "size_guide_present": facts.get("has_size_guide", False),
+            "material_composition": False,
+            "care_instructions": False,
+            "fit_description": False,
+            "specifications_table": False,
+            "score": 6.0 if facts.get("has_size_guide") else 4.0,
+        },
+        "mobile_ux": {
+            "score": 7.0 if facts.get("mobile_ux_hints") else 5.0,
+            "issues": [] if facts.get("mobile_ux_hints") else ["No explicit mobile UX signals in content"],
+        },
+        "page_layout": llm.get("page_layout") or {"above_fold_content": "adequate", "visual_hierarchy": "adequate", "whitespace_usage": "adequate", "score": 6.0},
+        "storytelling": llm.get("storytelling") or {"has_brand_story": False, "has_lifestyle_content": False, "emotional_appeal": "weak", "score": 5.0},
+        "urgency_scarcity": {
+            "stock_counter": any("left" in u.lower() for u in facts.get("urgency_snippets") or []),
+            "limited_time_offer": bool(facts.get("urgency_snippets")),
+            "social_proof_counter": facts.get("reviews_visible", False),
+            "recently_viewed_count": False,
+            "score": 6.0 if facts.get("urgency_snippets") else 3.0,
+        },
+        "checkout_friction": llm.get("checkout_friction") or {"guest_checkout_implied": False, "one_click_buy": False, "cart_abandonment_risk": "medium", "score": 5.0},
+        "friction_points": llm.get("friction_points") or [],
+        "conversion_blockers": llm.get("conversion_blockers") or [],
+        "recommendations": llm.get("recommendations") or [],
+        "_precomputed_facts": {k: v for k, v in facts.items() if not k.startswith("_")},
+    }
+
+
+async def ux_agent(state: AgentState) -> AgentState:
+    packages = state.get("agent_context_packages") or {}
+    ux_ctx = packages.get("ux")
+    if not ux_ctx:
+        return {"errors": ["ux_agent: no agent_context_packages.ux"]}
+
+    structured = state_dict(state, "json_structured_data")
+    ux_facts = extract_ux_facts(
+        page_contexts=state.get("page_contexts"),
+        structured=structured,
+        markdown=state.get("markdown_content") or "",
+    )
+
+    page_url = state.get("url") or ""
+    homepage_mode = resolve_homepage_mode(page_url, state.get("compare_as"))
+    page_note = (
+        "Page type: HOMEPAGE — score Get Started / app CTAs; missing Add to Cart is OK.\n\n"
+        if homepage_mode
+        else ""
+    )
 
     logger.info("ux_agent.start", model=_MODEL)
     t0 = time.monotonic()
 
-    user_message = f"""
-Analyze this product page for UX and conversion optimization:
+    user_message = f"""{page_note}PRECOMPUTED_UX_FACTS:
+{json.dumps({k: v for k, v in ux_facts.items() if k != '_deterministic'}, separators=(',', ':'))}
 
-Product Data:
-{structured}
+UX context package:
+{format_context_for_llm(ux_ctx, max_chars=2500)}
 
-Page Content (first 6000 chars):
-{markdown[:6000]}
-
-Check: CTA placement, trust signals, mobile UX issues, brand storytelling,
-urgency patterns, product imagery, and overall conversion readiness.
-""".strip()
+Analyze conversion friction and CRO opportunities only."""
 
     response = await claude.messages.create(
         model=_MODEL,
-        max_tokens=2048,
+        max_tokens=1536,
         system=_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )
 
     raw = response.content[0].text.strip()
     duration_ms = int((time.monotonic() - t0) * 1000)
-    ux_report, parse_err = safe_json_parse_report(raw, "ux_agent")
+    llm_layer, parse_err = safe_json_parse_report(raw, "ux_agent")
     if parse_err:
         return {"errors": [parse_err]}
 
-    logger.info(
-        "ux_agent.done",
-        score=ux_report.get("conversion_score"),
-        duration_ms=duration_ms,
-    )
+    ux_report = merge_ux_report(ux_facts, llm_layer)
+    logger.info("ux_agent.done", score=ux_report.get("conversion_score"), duration_ms=duration_ms)
 
     return {
         "ux_report": ux_report,
+        "ux_preprocessor_facts": ux_facts,
         "agent_reports": [
             {
                 "agent": "ux_agent",

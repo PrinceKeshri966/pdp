@@ -57,7 +57,7 @@ def _first_price(text: str) -> str | None:
     return m.group(0).strip() if m else None
 
 
-_COMPARE_ROWS = (
+_COMPARE_ROWS_PRODUCT = (
     ("Product images", "images_count", "higher"),
     ("Page content (words)", "page_word_count", "higher"),
     ("Customer reviews", "has_reviews", "bool"),
@@ -67,10 +67,23 @@ _COMPARE_ROWS = (
     ("Return policy", "has_return_policy", "bool"),
 )
 
+_COMPARE_ROWS_HOMEPAGE = (
+    ("Images on this page", "images_count", "higher"),
+    ("Words on this page", "page_word_count", "higher"),
+    ("Reviews section visible", "has_reviews", "bool"),
+    ("Review count shown", "review_count", "higher"),
+    ("Video on this page", "has_video", "bool"),
+)
 
-def build_comparison_matrix(sites: list[dict[str, Any]]) -> list[dict[str, Any]]:
+
+def build_comparison_matrix(
+    sites: list[dict[str, Any]],
+    *,
+    homepage_mode: bool = False,
+) -> list[dict[str, Any]]:
+    row_defs = _COMPARE_ROWS_HOMEPAGE if homepage_mode else _COMPARE_ROWS_PRODUCT
     rows: list[dict[str, Any]] = []
-    for label, key, mode in _COMPARE_ROWS:
+    for label, key, mode in row_defs:
         values = [s.get("features", {}).get(key) for s in sites]
         if all(v in (None, 0, False, "") for v in values):
             continue

@@ -8,6 +8,7 @@ from typing import Any
 
 MODE1_PIPELINE: list[tuple[str, str]] = [
     ("scraper", "Scraper Agent: Fetching page..."),
+    ("context_router", "Context Router: Mapping strategic pages..."),
     ("extractor", "Extractor Agent: Parsing product data..."),
     ("seo", "SEO Agent: Auditing search signals..."),
     ("aeo", "AEO Agent: Checking AI visibility..."),

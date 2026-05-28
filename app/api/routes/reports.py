@@ -113,13 +113,15 @@ async def get_analysis_report(
     report = result.scalar_one_or_none()
     if report is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
+    jsd = report.json_structured_data or {}
     return AnalyzePDPResponse(
         report_id=report.id,
         status=report.status,
         overall_health_score=report.overall_health_score,
         seo_score=report.seo_score,
         source_url=report.source_url,
-        json_structured_data=report.json_structured_data or {},
+        json_structured_data=jsd,
+        dom_technical_seo=jsd.get("_dom_technical_seo") or {},
         seo_report=report.seo_report or {},
         aeo_report=report.aeo_report or {},
         ux_report=report.ux_report or {},

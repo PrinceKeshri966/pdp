@@ -30,11 +30,17 @@ else:
 
 auth_required = provider != "none" or not (dev_bypass and app_env == "development")
 
+screenshot_base = (os.getenv("SCREENSHOT_API_URL") or "").strip().rstrip("/")
+skip_pw = (os.getenv("SKIP_PLAYWRIGHT") or "true").lower() in ("1", "true", "yes")
+screenshot_available = bool(screenshot_base) or not skip_pw
+
 config = {
     "auth_provider": provider,
     "auth_required": auth_required,
     "clerk_publishable_key": os.getenv("CLERK_PUBLISHABLE_KEY") or "",
     "google_login_url": "/api/v1/auth/google/login",
+    "screenshot_available": screenshot_available,
+    "screenshot_api_base": screenshot_base,
 }
 
 (PUBLIC / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")

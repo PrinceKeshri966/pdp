@@ -31,6 +31,7 @@ In Vercel → Project → **Settings** → **Environment Variables**, add:
 | `DEBUG` | `false` |
 | `DEV_AUTH_BYPASS` | `false` |
 | `SKIP_PLAYWRIGHT` | `true` |
+| `SCREENSHOT_API_URL` | `https://YOUR-RENDER-SERVICE.onrender.com` (for annotated screenshots) |
 | `GOOGLE_CLIENT_ID` | from Google Cloud |
 | `GOOGLE_CLIENT_SECRET` | from Google Cloud |
 | `APP_BASE_URL` | `https://YOUR-PROJECT.vercel.app` |
@@ -97,3 +98,7 @@ uvicorn app.main:app --reload
 ```
 
 Do **not** add Playwright to `requirements-vercel.txt` — deploy would fail or exceed limits.
+
+On **Render**, set `SKIP_PLAYWRIGHT=false`, install Chromium in your build, and add your Vercel URL to `ALLOWED_ORIGINS` for CORS.
+
+On **Vercel**, set `SCREENSHOT_API_URL` to your Render service URL — the SEO tab will call Render for `/api/v1/analyze/screenshot-annotate`.

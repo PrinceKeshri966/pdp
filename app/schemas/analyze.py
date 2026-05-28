@@ -56,11 +56,22 @@ class AnalyzePDPResponse(BaseModel):
 
     # Structured product data + source
     json_structured_data: dict[str, Any] = {}
+    dom_technical_seo: dict[str, Any] = {}
     source_url: str | None = None
 
     # Meta
     agent_reports: list[dict[str, Any]] = []
     errors: list[str] = []
+
+
+class GenerateContentRequest(BaseModel):
+    """On-demand lazy content sections (FAQs, social, email, AB tests, etc.)."""
+    sections: list[str] = []  # empty = all deferred lazy sections; or e.g. ["faqs", "social_captions"]
+
+
+class GenerateContentResponse(BaseModel):
+    report_id: UUID
+    generated_content: dict[str, Any] = {}
 
 
 # ── Mode 2 Request ────────────────────────────────────────────────────────────

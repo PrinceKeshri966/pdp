@@ -41,6 +41,15 @@ class AgentState(TypedDict, total=False):
     # ── Phase 1: Scraper output ───────────────────────────────────────────────
     markdown_content: Optional[str]
     scraper_method: Optional[str]
+    dom_technical_seo: Optional[dict[str, Any]]  # verified HTML facts from scraper pre-parse
+    scrape_html: Optional[str]  # truncated HTML for link extraction (context router)
+
+    # ── Phase 1b: Context router (strategic crawl + agent packages) ───────────
+    page_contexts: Optional[dict[str, Any]]  # role -> structured_page_summary
+    agent_context_packages: Optional[dict[str, Any]]  # seo|aeo|ux|psychology|competitor
+    seo_preprocessor_facts: Optional[dict[str, Any]]
+    ux_preprocessor_facts: Optional[dict[str, Any]]
+    psychology_preprocessor_facts: Optional[dict[str, Any]]
 
     # ── Phase 1: Extractor output ─────────────────────────────────────────────
     json_structured_data: Optional[dict[str, Any]]

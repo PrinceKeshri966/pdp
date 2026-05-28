@@ -5,7 +5,7 @@ Mode 1 LangGraph Pipeline — Fan-Out / Fan-In Architecture
 ──────────────────────────────────────────────────────────
 
 Phase 1 — Sequential (Data Prep):
-  URL → [Scraper] → [Extractor]
+  URL → [Scraper] → [ContextRouter] → [Extractor]
 
 Phase 2 — Parallel Fan-Out (Analysis):
   [Extractor] → [SEO] ──────────┐
@@ -29,6 +29,7 @@ from langgraph.graph import END, StateGraph
 
 from app.agents.state import AgentState
 from app.agents.scraper_agent import scraper_agent
+from app.agents.context_router import context_router_agent
 from app.agents.extractor_agent import extractor_agent
 from app.agents.seo_agent import seo_agent
 from app.agents.aeo_agent import aeo_agent
@@ -56,12 +57,18 @@ def _route_extractor(state: AgentState) -> list[str] | str:
     return ["seo", "aeo", "ux", "competitor", "psychology"]
 
 
+async def generation_join(state: AgentState) -> AgentState:
+    """Wait for autofix + content_gen parallel branches before pipeline ends."""
+    return {"status": "completed"}
+
+
 # ── Build the graph ───────────────────────────────────────────────────────────
 def build_mode1_graph() -> StateGraph:
     graph = StateGraph(AgentState)
 
     # ── Register all nodes ────────────────────────────────────────────────────
     graph.add_node("scraper", scraper_agent)
+    graph.add_node("context_router", context_router_agent)
     graph.add_node("extractor", extractor_agent)
 
     # Phase 2 — parallel analysis
@@ -74,9 +81,10 @@ def build_mode1_graph() -> StateGraph:
     # Phase 3 — synthesis
     graph.add_node("prioritization", prioritization_agent)
 
-    # Phase 4 — parallel generation
+    # Phase 4 — parallel generation (join so both finish before END)
     graph.add_node("autofix", autofix_agent)
     graph.add_node("content_gen", content_gen_agent)
+    graph.add_node("generation_join", generation_join)
 
     # ── Entry point ───────────────────────────────────────────────────────────
     graph.set_entry_point("scraper")
@@ -84,6 +92,11 @@ def build_mode1_graph() -> StateGraph:
     # ── Phase 1: Sequential ───────────────────────────────────────────────────
     graph.add_conditional_edges(
         "scraper",
+        _should_continue,
+        {"continue": "context_router", "abort": END},
+    )
+    graph.add_conditional_edges(
+        "context_router",
         _should_continue,
         {"continue": "extractor", "abort": END},
     )
@@ -98,13 +111,12 @@ def build_mode1_graph() -> StateGraph:
     graph.add_edge("competitor", "prioritization")
     graph.add_edge("psychology", "prioritization")
 
-    # ── Phase 4: Fan-Out (prioritization → autofix + content_gen in parallel) ─
+    # ── Phase 4: Fan-Out → join (both agents must finish; avoids dropped autofix_report) ─
     graph.add_edge("prioritization", "autofix")
     graph.add_edge("prioritization", "content_gen")
-
-    # ── END ───────────────────────────────────────────────────────────────────
-    graph.add_edge("autofix", END)
-    graph.add_edge("content_gen", END)
+    graph.add_edge("autofix", "generation_join")
+    graph.add_edge("content_gen", "generation_join")
+    graph.add_edge("generation_join", END)
 
     return graph
 
@@ -131,6 +143,13 @@ def build_mode1_initial_state(
         "status": "running",
         "markdown_content": None,
         "scraper_method": None,
+        "dom_technical_seo": None,
+        "scrape_html": None,
+        "page_contexts": None,
+        "agent_context_packages": None,
+        "seo_preprocessor_facts": None,
+        "ux_preprocessor_facts": None,
+        "psychology_preprocessor_facts": None,
         "json_structured_data": None,
         "seo_report": None,
         "aeo_report": None,

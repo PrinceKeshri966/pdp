@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     def google_enabled(self) -> bool:
         return bool(self.google_client_id.strip() and self.google_client_secret.strip())
 
+    # ── Screenshot API (Vercel UI → Render backend) ───────────────────────────
+    screenshot_api_url: str = ""  # e.g. https://your-app.onrender.com
+
     # ── Jina Reader ──────────────────────────────────────────────────────────
     jina_api_key: str = ""
 

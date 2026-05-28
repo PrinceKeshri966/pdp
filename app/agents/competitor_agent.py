@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from app.agents.competitor_discovery import discover_competitor_urls, resolve_homepage_mode
 from app.agents.page_features import (
     build_comparison_matrix,
+    features_from_markdown,
     features_from_structured,
     gaps_from_matrix,
 )
@@ -25,6 +26,15 @@ def _site_label(url: str) -> str:
         return urlparse(url).netloc.replace("www.", "")
     except Exception:
         return url[:40]
+
+
+def _features_usable(feat: dict) -> bool:
+    """True when deterministic extraction is sufficient for compare matrix."""
+    if not feat:
+        return False
+    wc = feat.get("page_word_count") or 0
+    imgs = feat.get("images_count") or 0
+    return wc >= 50 or imgs >= 1 or feat.get("has_reviews") or feat.get("price")
 
 
 async def _extract_features_with_llm(markdown: str, url: str) -> dict:
@@ -106,7 +116,10 @@ async def competitor_agent(state: AgentState) -> AgentState:
     for url in urls:
         markdown = await fetch_page_markdown(url)
         if markdown:
-            feat = await _extract_features_with_llm(markdown, url)
+            feat = features_from_markdown(markdown, url)
+            if not _features_usable(feat):
+                logger.info("competitor_agent.llm_fallback", url=url)
+                feat = await _extract_features_with_llm(markdown, url)
             sites.append(
                 {
                     "role": "competitor",
@@ -130,7 +143,10 @@ async def competitor_agent(state: AgentState) -> AgentState:
                 }
             )
 
-    rows = build_comparison_matrix([s for s in sites if s.get("scrape_ok")])
+    rows = build_comparison_matrix(
+        [s for s in sites if s.get("scrape_ok")],
+        homepage_mode=homepage_mode,
+    )
     gaps = gaps_from_matrix([s for s in sites if s.get("scrape_ok")], rows)
     wins = [f"You lead on {r['label']}" for r in rows if r.get("you_win")]
 
@@ -142,6 +158,10 @@ async def competitor_agent(state: AgentState) -> AgentState:
         "live_compare": {
             "compare_as": compare_as,
             "compare_page_type": compare_page_type,
+            "metrics_note": (
+                "Each number is measured on the exact URL shown above (one homepage or one product page per site), "
+                "from live HTML at audit time — not sitewide averages."
+            ),
             "sites": sites,
             "rows": rows,
         },

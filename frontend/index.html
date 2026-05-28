@@ -1,27 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <!--
-    Integration instructions for Chat + File Upload (for Cursor):
-
-    "I have the backend logic working (I get a valid JSON response). Now I need to implement the Chat and File Upload features and fix the view rendering. Please update my files as follows:
-
-    1. Backend (analyze.py):
-
-    Create a new endpoint POST /api/v1/chat/upload. It must accept UploadFile. Use python-docx, pypdf, and python-pptx to extract text.
-
-    Ensure this endpoint returns a JSON: {"text": "extracted content..."}.
-
-    2. Frontend (index.html):
-
-    Inside view === 'MODE2_INPUT', replace the static form with the Chat UI I previously shared (or a refined version).
-
-    File Upload Integration: Add a file input (hidden) and a paperclip button. When a file is uploaded, use fetch to send it to /api/v1/chat/upload. Take the returned text and append it as a 'system' message into the chatHistory state.
-
-    Chat Logic: Ensure handleSendMessage sends the message to the backend.
-
-    Display Logic: Ensure that when the AI returns the blueprint JSON (the one I shared), setView('SELECT_LAYOUT') is triggered and the UI displays the blueprint data fetched from the API response."
-    -->
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OptiPDP - AI Commerce OS</title>
@@ -53,6 +32,9 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
+        // Mode 1 only — hide Mode 2 UI until blueprint flow is production-ready
+        const MODE1_FOCUS = true;
+
         // ── Auth & API helpers ────────────────────────────────────────────────────
         let _clerk = null;
         let _authProvider = 'none';
@@ -79,6 +61,17 @@
 
         function isLocalDevHost() {
             return /localhost|127\.0\.0\.1/.test(window.location.hostname);
+        }
+
+        /** Merge dom_technical_seo from API top-level or persisted json_structured_data._dom_technical_seo */
+        function normalizeMode1Result(data) {
+            if (!data) return data;
+            const jsd = data.json_structured_data || {};
+            const nestedDom = jsd._dom_technical_seo || {};
+            const topDom = data.dom_technical_seo || {};
+            const hasTop = topDom.title_tag || topDom.meta_description;
+            const dom = hasTop ? topDom : (Object.keys(nestedDom).length ? nestedDom : topDom);
+            return { ...data, dom_technical_seo: dom };
         }
 
         function getAuthErrorMessage(code) {
@@ -269,88 +262,236 @@
             );
         }
 
-        function getCompetitorSites(understanding) {
-            const text = [
-                understanding?.product_category,
-                understanding?.sub_category,
-                ...(understanding?.competitors || []),
-            ].join(' ').toLowerCase();
-            const pick = (entries) => entries.slice(0, 2);
-            if (/saree|ethnic|banarasi|silk|lehenga|indian/.test(text)) {
-                return pick([
-                    { name: 'Fabindia', url: 'https://www.fabindia.com', style: 'Heritage craft, rich imagery' },
-                    { name: 'Manyavar', url: 'https://www.manyavar.com', style: 'Trust-first, occasion wear' },
-                ]);
-            }
-            if (/skincare|beauty|cosmetic/.test(text)) {
-                return pick([
-                    { name: 'Mamaearth', url: 'https://mamaearth.in', style: 'Clean, ingredient-led PDP' },
-                    { name: 'Nykaa', url: 'https://www.nykaa.com', style: 'Reviews & ratings heavy' },
-                ]);
-            }
-            if (/fitness|gym/.test(text)) {
-                return pick([
-                    { name: 'Cult.fit', url: 'https://www.cult.fit', style: 'Bold CTA, minimal copy' },
-                    { name: 'Fitpass', url: 'https://fitpass.co.in', style: 'Plan comparison layout' },
-                ]);
-            }
-            const names = (understanding?.competitors || []).slice(0, 2);
-            if (names.length >= 1) {
-                return names.map((n, i) => ({
-                    name: n,
-                    url: n.startsWith('http') ? n : `https://www.google.com/search?q=${encodeURIComponent(n + ' product page')}`,
-                    style: 'Market competitor',
-                    isSearch: !n.startsWith('http'),
-                }));
-            }
-            return [];
-        }
-
         function sitePreviewUrl(url) {
             if (!url || url.includes('google.com/search')) return null;
             return `https://api.microlink.io/?url=${encodeURIComponent(url)}&screenshot=true&embed=screenshot.url&meta=false&viewport.width=1280&viewport.height=800`;
         }
 
+        /** PDP-only checks: no misleading screenshot on homepage audits */
+        const PDP_ONLY_VISUAL_CHECKS = new Set([
+            'img_angles', 'img_zoom', 'img_lifestyle', 'img_video',
+            'info_size_guide', 'info_material', 'info_fit', 'info_specs',
+            'checkout_guest', 'checkout_one_click', 'urgency_stock',
+        ]);
+
         function getCheckPageLocation(checkId) {
+            const V = (zone, top, height, hint) => ({
+                zone, top, height, hint, serpOnly: false, visualPreview: true,
+            });
+            const T = (zone, hint) => ({
+                zone, top: null, height: null, hint, serpOnly: false, visualPreview: false,
+            });
+            const S = (zone, hint) => ({
+                zone, top: null, height: null, hint, serpOnly: true, visualPreview: false,
+            });
+
             const zones = {
-                kw_in_h1: { zone: 'Main H1 headline', top: '10%', height: '14%', hint: 'Look at the largest heading at the top of the page — that is your H1.', serpOnly: false },
-                kw_in_title: { zone: 'Browser tab / Google title', top: null, hint: 'This is the page title tag — shown in the browser tab and as the blue link on Google, not as large text on the page.', serpOnly: true },
-                kw_in_meta: { zone: 'Google search snippet', top: null, hint: 'Meta description appears under your link on Google — it is not visible as body text on the live page.', serpOnly: true },
-                kw_in_first_100: { zone: 'Opening paragraph', top: '18%', height: '16%', hint: 'Check the first paragraph below the main headline — your keyword should appear early.', serpOnly: false },
-                meta_has_cta: { zone: 'Google search snippet', top: null, hint: 'The call-to-action lives in your meta description on Google results.', serpOnly: true },
-                headings_logical_hierarchy: { zone: 'Section headings', top: '28%', height: '45%', hint: 'Scan H2/H3 section titles as you scroll — they should follow a logical order.', serpOnly: false },
-                headings_keywords: { zone: 'Section headings', top: '28%', height: '45%', hint: 'Look at H2/H3 headings in product or category sections.', serpOnly: false },
-                content_adequate: { zone: 'Main content area', top: '22%', height: '55%', hint: 'Scroll through the full page body — descriptions, features, and details.', serpOnly: false },
-                content_unique: { zone: 'Main content area', top: '22%', height: '55%', hint: 'Read product or brand copy in the middle of the page.', serpOnly: false },
-                trust_reviews: { zone: 'Reviews & ratings', top: '55%', height: '20%', hint: 'Customer reviews usually sit mid-page or below product details.', serpOnly: false },
-                trust_rating: { zone: 'Star rating', top: '14%', height: '10%', hint: 'Star ratings often appear near the product title or price.', serpOnly: false },
-                trust_return: { zone: 'Footer / policy links', top: '78%', height: '18%', hint: 'Return policy links are usually in the footer or near checkout trust badges.', serpOnly: false },
-                trust_security: { zone: 'Checkout / trust badges', top: '72%', height: '20%', hint: 'Security badges and payment icons appear near Add to Cart or in the footer.', serpOnly: false },
-                trust_moneyback: { zone: 'Trust badges near price', top: '16%', height: '12%', hint: 'Money-back guarantees often sit near the price or Add to Cart button.', serpOnly: false },
-                img_angles: { zone: 'Product image gallery', top: '8%', height: '35%', hint: 'Product photos and gallery thumbnails — usually left or top of the page.', serpOnly: false },
-                img_zoom: { zone: 'Product image gallery', top: '8%', height: '35%', hint: 'Click product images to see if zoom or multiple angles are available.', serpOnly: false },
-                img_lifestyle: { zone: 'Product image gallery', top: '8%', height: '35%', hint: 'Lifestyle shots appear in the image carousel alongside pack shots.', serpOnly: false },
-                img_video: { zone: 'Product media', top: '8%', height: '35%', hint: 'Product video or 360° view sits in the image gallery area.', serpOnly: false },
-                cta_found: { zone: 'Add to Cart / Shop button', top: '20%', height: '12%', hint: 'Primary CTA buttons are usually near the price, above the fold.', serpOnly: false },
-                cta_above_fold: { zone: 'Hero / above the fold', top: '8%', height: '30%', hint: 'The main action button should be visible without scrolling.', serpOnly: false },
-                cta_sticky: { zone: 'Sticky bar (bottom)', top: '88%', height: '10%', hint: 'On mobile, a sticky Add to Cart bar sticks to the bottom while scrolling.', serpOnly: false },
-                faq_found: { zone: 'FAQ section', top: '62%', height: '22%', hint: 'FAQ accordions are usually lower on the page before the footer.', serpOnly: false },
-                faq_conversational: { zone: 'FAQ section', top: '62%', height: '22%', hint: 'Check how questions are phrased in the FAQ block.', serpOnly: false },
-                faq_schema: { zone: 'FAQ section (page source)', top: '62%', height: '22%', hint: 'FAQ content on page — schema is in HTML source.', serpOnly: false },
-                info_size_guide: { zone: 'Size / fit info', top: '38%', height: '18%', hint: 'Size guides appear near variant selectors or in product details tabs.', serpOnly: false },
-                info_material: { zone: 'Product details', top: '35%', height: '25%', hint: 'Material and ingredient info is in the description or specs section.', serpOnly: false },
-                info_specs: { zone: 'Specifications tab', top: '40%', height: '22%', hint: 'Technical specs are often in tabs or accordion below the description.', serpOnly: false },
-                urgency_stock: { zone: 'Near Add to Cart', top: '18%', height: '14%', hint: 'Low-stock messages appear close to the buy button.', serpOnly: false },
-                urgency_limited: { zone: 'Promo banner / hero', top: '4%', height: '12%', hint: 'Limited-time offers often show in the top banner or hero.', serpOnly: false },
-                urgency_social: { zone: 'Social proof strip', top: '24%', height: '10%', hint: '"X people bought this" messages sit near price or reviews.', serpOnly: false },
-                tech_canonical: { zone: 'Page source (HTML head)', top: null, hint: 'Canonical tag is in the HTML <head> — use View Page Source.', serpOnly: true },
-                tech_og: { zone: 'Page source / social preview', top: null, hint: 'Open Graph tags are in HTML head — they control link previews on social.', serpOnly: true },
-                schema_product: { zone: 'Page source (JSON-LD)', top: null, hint: 'Product schema is embedded in page source, not visible on screen.', serpOnly: true },
+                kw_in_h1: V('Main H1 headline', '22%', '12%', 'Your H1 is the largest headline in the hero — below the top banner.'),
+                kw_in_first_100: V('Opening paragraph', '24%', '14%', 'First text block under the main headline.'),
+                headings_logical_hierarchy: V('Section headings (H2/H3)', '32%', '40%', 'Scroll through section titles — FITCOACH, FITFEAST blocks, etc.'),
+                headings_keywords: V('Section headings (H2/H3)', '32%', '40%', 'Keywords should appear in section headings as you scroll.'),
+                content_adequate: V('Main page content', '28%', '50%', 'Body copy, feature lists, and benefit sections across the page.'),
+                content_unique: V('Main page content', '28%', '50%', 'Brand story and feature descriptions in the middle of the page.'),
+                trust_reviews: V('Reviews & ratings strip', '48%', '16%', 'Star ratings and review counts (e.g. 4.7★, 30K+ reviews).'),
+                trust_rating: V('Star rating badge', '46%', '12%', 'Average rating shown near trust or download stats.'),
+                trust_return: V('Footer policies', '82%', '14%', 'Return/refund links in the footer.'),
+                trust_security: V('Footer / payment trust', '78%', '16%', 'Payment icons and security badges near footer or signup.'),
+                trust_moneyback: V('Trust near CTA', '12%', '14%', 'Guarantee text near Get Started / Log in.'),
+                cta_found: V('Primary buttons (Get Started)', '10%', '14%', 'Main CTA in the header or hero — Get Started, Log in, Download.'),
+                cta_above_fold: V('Hero / header CTAs', '8%', '22%', 'Buttons visible without scrolling — top navigation area.'),
+                urgency_limited: V('Top promo banner', '4%', '10%', 'Limited-time or campaign banners at the very top.'),
+                urgency_social: V('Social proof line', '44%', '12%', '"7M+ users" or similar proof near ratings.'),
+                faq_found: V('FAQ section', '68%', '20%', 'FAQ accordion — usually lower on the page.'),
+                faq_conversational: V('FAQ section', '68%', '20%', 'How questions are worded in the FAQ block.'),
+                emotion_identity: V('Hero / brand message', '20%', '18%', 'Identity-focused headline and subcopy in the hero.'),
+                emotion_aspirational: V('Hero / lifestyle copy', '22%', '20%', 'Aspirational language in hero or feature sections.'),
+                peak_end_rule: V('Bottom CTA / closing section', '75%', '18%', 'Strong closing CTA or app-download block before footer.'),
+
+                kw_in_title: S('Browser tab / Google title', 'Title tag — see Extracted Source Code Fact or Google Ranking SERP preview.'),
+                kw_in_meta: S('Google search snippet', 'Meta description — not visible on the live page body.'),
+                meta_has_cta: S('Google search snippet', 'CTA in meta — only appears in Google results.'),
+                tech_canonical: S('HTML <head>', 'Canonical is in page source — see Extracted Source Code Fact below.'),
+                tech_og: S('HTML <head>', 'Open Graph tags — see source fact or SEO tab.'),
+                tech_twitter: T('HTML <head>', 'Twitter Card meta tags are in page source, not visible on screen.'),
+                tech_hreflang: T('HTML <head>', 'Hreflang tags are in page source for multi-language sites.'),
+                tech_mobile: T('Whole page (responsive)', 'Mobile-friendly is a technical test — resize browser or use Lighthouse.'),
+                tech_lazy_loading: T('Images (technical)', 'Lazy-loading is in HTML attributes — not obvious in a screenshot.'),
+                tech_images_optimized: T('Images (technical)', 'Image weight is a performance metric — not a single page zone.'),
+                tech_pagination: T('Listing pages', 'Pagination applies to category/search pages, not this homepage.'),
+                schema_product: S('JSON-LD in source', 'Product schema is in HTML source — homepage often uses Organization instead.'),
+                schema_breadcrumb: S('JSON-LD in source', 'Breadcrumb schema is embedded in page source.'),
+                schema_review: S('JSON-LD in source', 'Review schema is in page source — may power star snippets in Google.'),
+                faq_schema: S('JSON-LD in source', 'FAQ schema is in page source, not a visible box on screen.'),
+                speakable_schema: S('JSON-LD / voice SEO', 'Speakable schema is for voice assistants — in source only.'),
+
+                price_charm: T('Membership / pricing page', 'Charm pricing (₹999) is on plan cards — open pricing or scroll to membership section on your live site.'),
+                price_anchor: T('Pricing tiles', 'Anchor pricing needs visible "was/now" on plan cards — not in the hero screenshot.'),
+                decoy_pricing: T('Plan comparison', 'Decoy pricing needs 3+ plan tiers side by side — check your pricing page.'),
+                img_angles: T('Product gallery', 'Multiple product angles apply to product pages, not typical homepages.'),
+                img_zoom: T('Product gallery', 'Zoom applies to product detail images.'),
+                img_lifestyle: T('Product gallery', 'Lifestyle shots are on product PDPs.'),
+                img_video: T('Video section', 'Product video — check hero video or media section if present.'),
+                cta_sticky: T('Mobile sticky bar', 'Sticky CTA appears on mobile when scrolling — test on phone width.'),
+                info_size_guide: T('Product details', 'Size guide is for fashion/product PDPs.'),
+                info_material: T('Product specs', 'Material info is on product detail pages.'),
+                info_fit: T('Product specs', 'Fit description is for apparel PDPs.'),
+                info_specs: T('Specifications', 'Specs table is on product detail pages.'),
+                checkout_guest: T('Checkout flow', 'Guest checkout is on cart/checkout — not homepage.'),
+                checkout_one_click: T('Checkout flow', 'One-click buy is on checkout, not landing page.'),
+                urgency_stock: T('Product stock counter', 'Stock counters are on product pages near Add to Cart.'),
+
+                geo_perplexity: T('AI-citable content', 'Perplexity cites clear factual paragraphs — see AEO tab recommendations.'),
+                geo_sge: T('AI Overview content', 'Structured answers for Google AI — content quality across the page.'),
+                geo_direct_answer: T('Answer-ready copy', 'Direct Q&A style paragraphs — mid-page content sections.'),
+                rag_citable: T('Citable facts', 'Unique facts and stats (7M users, 12k gyms) in page copy.'),
+                rag_uvp: T('Value proposition', 'What makes you different — hero and feature sections.'),
+                rag_factual: T('Factual claims', 'Numbers and claims in body copy — verify in text below.'),
+                aeo_conversational: T('Conversational copy', 'Natural language in descriptions — read page text.'),
+                aeo_llm_snippet: T('Snippet-ready paragraphs', 'Short clear paragraphs AI can quote.'),
+                aeo_not_commodity: T('Unique content', 'Differentiation vs competitors — full page read.'),
+                aeo_unique_perspective: T('Brand angle', 'Unique positioning in hero and features.'),
             };
-            return zones[checkId] || { zone: 'Top of page', top: '15%', height: '18%', hint: 'Check the highlighted area on your site preview below.', serpOnly: false };
+            return zones[checkId] || {
+                zone: 'This check',
+                top: null,
+                height: null,
+                hint: 'No page screenshot for this check — use the explanation and extracted facts above.',
+                serpOnly: false,
+                visualPreview: false,
+            };
         }
 
+        function isHomepageAudit(result) {
+            const lc = result?.competitor_report?.live_compare;
+            return lc?.compare_page_type === 'homepage';
+        }
+
+        /** Show site screenshot only when we can point to a real on-page zone for this check */
+        function shouldShowCheckImage(checkId, result) {
+            const loc = getCheckPageLocation(checkId);
+            if (!loc.visualPreview || loc.serpOnly || !loc.top) return false;
+            if (result && isHomepageAudit(result) && PDP_ONLY_VISUAL_CHECKS.has(checkId)) return false;
+            return true;
+        }
+
+        function tabHasReportData(tabId, ctx) {
+            const { seoRpt, aeoRpt, uxRpt, competitorRpt, psychRpt, autofixRpt, contentRpt } = ctx;
+            const hasAutofix = Boolean(
+                autofixRpt?.fixed_title_tag || autofixRpt?.fixed_meta_description || autofixRpt?.fixed_h1
+                || autofixRpt?.rewritten_product_description || (autofixRpt?.code_blocks || []).length
+            );
+            const hasContent = Boolean(
+                (contentRpt?.faqs || []).length || contentRpt?.product_description
+                || contentRpt?.meta_title || contentRpt?.schema_markup
+            );
+            const hasLiveCompare = Boolean((competitorRpt?.live_compare?.sites || []).length);
+            switch (tabId) {
+                case 'COMPARE': return hasLiveCompare;
+                case 'SEO': return Boolean(seoRpt && Object.keys(seoRpt).length);
+                case 'AEO': return Boolean(aeoRpt?.ai_visibility_score != null || (aeoRpt?.gaps || []).length);
+                case 'UX': return Boolean(uxRpt?.conversion_score != null);
+                case 'COMPETITOR':
+                    return Boolean(
+                        competitorRpt?.market_positioning?.price_tier
+                        || competitorRpt?.benchmark_scores?.avg_seo_score != null
+                    );
+                case 'PSYCHOLOGY': return Boolean(psychRpt?.overall_psychology_score != null);
+                case 'AUTOFIX': return hasAutofix;
+                case 'CONTENT': return hasContent;
+                case 'OPTIMIZED': return hasAutofix;
+                default: return true;
+            }
+        }
+
+        function getDomEvidenceForCheck(checkId, result) {
+            const dom = result?.dom_technical_seo || {};
+            const seo = result?.seo_report || {};
+            const tech = seo.technical_seo || {};
+            const struct = seo.structured_data || {};
+            const pageUrl = result?.source_url || 'https://yoursite.com/product';
+            const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+            if (checkId === 'tech_canonical') {
+                const present = dom.canonical_present ?? tech.canonical_present;
+                if (present === true) {
+                    return '&lt;link rel="canonical" href="' + esc(pageUrl) + '" /&gt;';
+                }
+                if (present === false) {
+                    return '&lt;!-- VERIFIED: no canonical link in HTML source --&gt;';
+                }
+            }
+            if (checkId === 'schema_product') {
+                const present = dom.product_schema_present ?? struct.has_product_schema;
+                if (present === true) {
+                    return 'VERIFIED JSON-LD block: {"@type": "Product", "name": "...", "offers": {...}}';
+                }
+                if (present === false) {
+                    return 'VERIFIED: no Product @type in application/ld+json blocks';
+                }
+            }
+            if (checkId === 'tech_og') {
+                const present = dom.open_graph_present ?? tech.open_graph_present;
+                if (present === true) {
+                    return '&lt;meta property="og:title" content="..." /&gt;\n&lt;meta property="og:description" content="..." /&gt;';
+                }
+                if (present === false) {
+                    return '&lt;!-- VERIFIED: no og:title meta in HTML head --&gt;';
+                }
+            }
+            if (checkId === 'kw_in_meta' || checkId === 'meta_has_cta') {
+                const val = dom.meta_description ?? seo.meta_description?.value;
+                if (val) {
+                    return '&lt;meta name="description" content="' + esc(val).slice(0, 200) + '" /&gt;';
+                }
+                if (val === null || (dom.meta_description === null && !seo.meta_description?.value)) {
+                    return '&lt;!-- VERIFIED: no meta description in HTML source --&gt;';
+                }
+            }
+            if (checkId === 'faq_schema') {
+                const present = dom.faq_schema_present ?? struct.has_faq_schema;
+                if (present === true) {
+                    return 'VERIFIED JSON-LD block: {"@type": "FAQPage", "mainEntity": [...]}';
+                }
+                if (present === false) {
+                    return 'VERIFIED: no FAQPage JSON-LD in page source';
+                }
+            }
+            if (checkId === 'kw_in_h1') {
+                const h1 = seo.h1?.value;
+                if (h1) return '&lt;h1&gt;' + esc(h1.slice(0, 120)) + '&lt;/h1&gt;';
+                return '&lt;!-- VERIFIED: no h1 element in page DOM --&gt;';
+            }
+            if (checkId === 'kw_in_title') {
+                const t = dom.title_tag ?? seo.title_tag?.value;
+                if (t) return '&lt;title&gt;' + esc(t.slice(0, 120)) + '&lt;/title&gt;';
+                return '&lt;!-- VERIFIED: empty or missing title tag --&gt;';
+            }
+            if (checkId === 'aeo_llm_snippet') {
+                const cq = result?.aeo_report?.content_quality || {};
+                if (cq.llm_snippet_ready === true) {
+                    return 'AEO audit: snippet-ready paragraphs detected in page content.';
+                }
+                if (cq.llm_snippet_ready === false) {
+                    return 'AEO audit: no clear 2–3 sentence AI-quotable summary block found in scraped text.';
+                }
+            }
+            return null;
+        }
+
+        const COMPARE_METRIC_HELP = {
+            images_count: 'How many images appear in the scraped HTML of that single URL (not the whole site).',
+            page_word_count: 'Total words in the text we scraped from that exact page URL at audit time.',
+            has_reviews: 'Whether review/rating language appears on that scraped page.',
+            review_count: 'Review count if visible in that page’s scraped text.',
+            has_video: 'Whether video/embed keywords appear on that scraped page.',
+            has_size_guide: 'Whether size-guide language appears on that scraped page.',
+            has_return_policy: 'Whether return-policy language appears on that scraped page.',
+        };
+
         function getDetectedValueForCheck(checkId, result) {
+            const domSnippet = getDomEvidenceForCheck(checkId, result);
+            if (domSnippet) return domSnippet;
+
             const seo = result?.seo_report || {};
             const ux = result?.ux_report || {};
             const map = {
@@ -368,7 +509,9 @@
             const [useIframe, setUseIframe] = useState(false);
             const loc = getCheckPageLocation(checkId);
             const preview = sitePreviewUrl(url);
-            if (!url || loc.serpOnly) return null;
+            if (!url || !loc.visualPreview || !loc.top) return null;
+            const scrollPct = loc.top ? Math.min(85, Math.max(0, parseFloat(loc.top) - 5)) : 0;
+            const objectPosition = `center ${scrollPct}%`;
             return (
                 <div className="relative rounded-xl overflow-hidden border border-slate-200 bg-slate-100">
                     <div className="h-44 relative overflow-hidden">
@@ -377,13 +520,15 @@
                                 title="Site preview"
                                 src={url}
                                 className="w-[400%] h-[400%] origin-top-left scale-[0.25] pointer-events-none border-0 bg-white"
+                                style={{ marginTop: loc.top ? `-${scrollPct * 3}%` : 0 }}
                                 sandbox="allow-scripts allow-same-origin"
                             />
                         ) : (
                             <img
                                 src={preview}
                                 alt="Your site preview"
-                                className="w-full h-full object-cover object-top"
+                                className="w-full h-full object-cover"
+                                style={{ objectPosition }}
                                 loading="lazy"
                                 onError={() => setUseIframe(true)}
                             />
@@ -647,7 +792,7 @@
         }
 
         // ── Main App ──────────────────────────────────────────────────────────────
-        function App({ needsSignIn, authUser, authProvider, authError, screenshotAvailable = false }) {
+        function App({ needsSignIn, authUser, authProvider, authError }) {
             if (needsSignIn) return <SignInView authProvider={authProvider} authError={authError} />;
 
             // VIEWS: HOME | MODE1_INPUT | MODE2_INPUT | ANALYZING | RESEARCHING |
@@ -661,12 +806,11 @@
             const [urlInput, setUrlInput] = useState('');
             const [compareAs, setCompareAs] = useState('auto');
             const [mode1Result, setMode1Result] = useState(null);
-            const [screenshotData, setScreenshotData] = useState(null);
-            const [screenshotLoading, setScreenshotLoading] = useState(false);
+            const [contentGenLoading, setContentGenLoading] = useState(false);
             const [reportTab, setReportTab] = useState('COMPARE');
             const [historyItems, setHistoryItems] = useState({ analysis_reports: [], blueprints: [] });
             const [historyLoading, setHistoryLoading] = useState(false);
-            const [historyFilter, setHistoryFilter] = useState('all');
+            const [historyFilter, setHistoryFilter] = useState(MODE1_FOCUS ? 'audits' : 'all');
             const [historySearch, setHistorySearch] = useState('');
             const [historyOpening, setHistoryOpening] = useState(null);
             const [previewToggle, setPreviewToggle] = useState('OPTIMIZED');
@@ -725,50 +869,6 @@
                 if (view === 'HISTORY') loadHistory();
             }, [view]);
 
-            const fetchScreenshot = async () => {
-                if (!screenshotAvailable) {
-                    showToast('Annotated screenshots need Playwright — not available on Vercel. Run the API locally with SKIP_PLAYWRIGHT=false.');
-                    return;
-                }
-                const targetUrl = (mode1Result?.source_url || urlInput || '').trim();
-                if (!mode1Result || !targetUrl) return;
-                const seoRpt = mode1Result.seo_report || {};
-                const issues = [];
-                if (!seoRpt.h1?.value) {
-                    issues.push({ id: 'missing_h1', severity: 'critical', label: 'H1 missing' });
-                }
-                if ((seoRpt.meta_description?.length ?? 0) < 120) {
-                    issues.push({ id: 'meta_too_short', severity: 'warning', label: 'Meta too short' });
-                }
-                if ((seoRpt.image_seo?.missing_alt ?? 0) > 0) {
-                    issues.push({ id: 'img_no_alt', severity: 'critical', label: 'No alt text' });
-                }
-                if (!seoRpt.structured_data?.has_product_schema) {
-                    issues.push({ id: 'no_schema', severity: 'critical', label: 'No schema' });
-                }
-                if (!seoRpt.technical_seo?.canonical_present) {
-                    issues.push({ id: 'no_canonical', severity: 'warning', label: 'No canonical' });
-                }
-                setScreenshotLoading(true);
-                try {
-                    const resp = await apiFetch('/api/v1/analyze/screenshot-annotate', {
-                        method: 'POST',
-                        body: { url: targetUrl, issues },
-                    });
-                    setScreenshotData(resp.screenshot_base64);
-                } catch (e) {
-                    showToast(`Screenshot failed: ${e.message}`);
-                } finally {
-                    setScreenshotLoading(false);
-                }
-            };
-
-            useEffect(() => {
-                if (screenshotAvailable && reportTab === 'SEO' && mode1Result && !screenshotData) {
-                    fetchScreenshot();
-                }
-            }, [reportTab, screenshotAvailable]);
-
             const openHistoryReport = async (id) => {
                 setHistoryOpening(id);
                 try {
@@ -780,9 +880,8 @@
                     if (data.status === 'failed') {
                         showToast(data.errors?.[0] || 'This audit failed. Please try again.');
                     }
-                    setMode1Result(data);
+                    setMode1Result(normalizeMode1Result(data));
                     setUrlInput(data.source_url || '');
-                    setScreenshotData(null);
                     setReportTab('COMPARE');
                     setView('REPORT_MODE1');
                 } catch (e) {
@@ -843,8 +942,8 @@
                 setView(navStack[ni]);
             };
 
-            const isMode2View = ['MODE2_INPUT', 'RESEARCHING', 'SELECT_LAYOUT', 'VISUALIZER_MODE2'].includes(view);
-            const isHomeNav = ['HOME', 'MODE1_INPUT', 'MODE2_INPUT', 'ANALYZING', 'RESEARCHING'].includes(view);
+            const isMode2View = !MODE1_FOCUS && ['MODE2_INPUT', 'RESEARCHING', 'SELECT_LAYOUT', 'VISUALIZER_MODE2'].includes(view);
+            const isHomeNav = ['HOME', 'MODE1_INPUT', 'ANALYZING', ...(MODE1_FOCUS ? [] : ['MODE2_INPUT', 'RESEARCHING'])].includes(view);
             const agentBadgeCount = isMode2View ? 3 : 10;
 
             // ── Mode 1: call POST /api/v1/analyze/pdp ────────────────────────────
@@ -864,8 +963,7 @@
                             }
                         }
                     );
-                    setMode1Result(result);
-                    setScreenshotData(null);
+                    setMode1Result(normalizeMode1Result(result));
                     setReportTab('COMPARE');
                     setView('REPORT_MODE1');
                     loadHistory();
@@ -1209,7 +1307,6 @@
             const brandCategory  = understanding.sub_category || understanding.product_category || 'Product';
             const competitorPats = mode2Result?.pdp_research?.top_competitor_pdp_patterns || [];
             const categoryImages = buildPromptImages(understanding, chatHistory);
-            const competitorSites = getCompetitorSites(understanding);
             const materialContent = findBlueprintSection(blueprint.page_sections, /material|care/i)?.content?.body_copy
                 || (understanding.key_features || []).slice(0, 4).join('. ')
                 || 'Premium quality materials. Follow care label instructions. Dry clean recommended for delicate fabrics.';
@@ -1238,6 +1335,7 @@
                         const previewUrl = mode1Result?.source_url || urlInput || '';
                         const pageLoc = getCheckPageLocation(checkDetail.checkId);
                         const detectedVal = mode1Result ? getDetectedValueForCheck(checkDetail.checkId, mode1Result) : null;
+                        const showCheckImage = previewUrl && mode1Result && shouldShowCheckImage(checkDetail.checkId, mode1Result);
                         return (
                             <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50" onClick={() => setCheckDetail(null)}>
                                 <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
@@ -1268,23 +1366,35 @@
                                                 {passed ? (entry.ok || 'This looks good on your page.') : (entry.fail || 'This needs attention on your page.')}
                                             </p>
                                             {detectedVal && (
-                                                <p className="text-xs mt-2 font-mono bg-slate-100 text-slate-700 px-3 py-2 rounded-lg border border-slate-200">
-                                                    Found on your site: <strong>{detectedVal}</strong>
-                                                </p>
+                                                <div className="mt-2">
+                                                    <p className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-1">Extracted Source Code Fact</p>
+                                                    <pre className="text-xs font-mono bg-slate-900 text-emerald-400 p-3 rounded-lg overflow-x-auto shadow-inner border border-slate-700">
+                                                        <code>{detectedVal}</code>
+                                                    </pre>
+                                                </div>
                                             )}
                                         </div>
-                                        {previewUrl && (
-                                            <div>
-                                                <p className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">Where on your page</p>
-                                                <p className="text-sm text-slate-600 mb-3">{pageLoc.hint}</p>
-                                                {!pageLoc.serpOnly && <CheckSitePreview url={previewUrl} checkId={checkDetail.checkId} passed={passed} />}
-                                                {pageLoc.serpOnly && (
-                                                    <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 text-sm text-amber-900">
-                                                        <i className="ph ph-magnifying-glass mr-1"></i> This check applies to <strong>{pageLoc.zone}</strong> — open your site and check the browser tab or Google preview in the SEO tab.
-                                                    </div>
-                                                )}
-                                            </div>
-                                        )}
+                                        <div>
+                                            <p className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">
+                                                {showCheckImage ? 'Where on your page' : 'How to verify on your site'}
+                                            </p>
+                                            <p className="text-sm text-slate-600 mb-3">{pageLoc.hint}</p>
+                                            {showCheckImage && (
+                                                <CheckSitePreview url={previewUrl} checkId={checkDetail.checkId} passed={passed} />
+                                            )}
+                                            {!showCheckImage && (
+                                                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm text-slate-700 space-y-2">
+                                                    <p><i className="ph ph-text-align-left text-slate-500 mr-1"></i>
+                                                        This check is <strong>not shown on one screen zone</strong> (it may be in HTML source, Google results, or spread across the page).
+                                                    </p>
+                                                    {detectedVal ? (
+                                                        <p className="text-xs text-slate-600">See <strong>Extracted Source Code Fact</strong> above for what we found on your site.</p>
+                                                    ) : (
+                                                        <p className="text-xs text-slate-600">Read <strong>Status on your website</strong> and <strong>How to fix it</strong> below — or open the SEO / AI Visibility tab for full detail.</p>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
                                         {!passed && (
                                             <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4">
                                                 <p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-2">How to fix it</p>
@@ -1335,9 +1445,9 @@
                                 </button>
                                 <button onClick={() => setView('HISTORY')} className={`w-full flex items-center gap-3 p-2 rounded-lg transition-colors ${view === 'HISTORY' ? 'bg-indigo-50 text-indigo-700 font-bold' : 'hover:bg-slate-50'}`}>
                                     <i className="ph ph-clock-counter-clockwise text-lg"></i> History
-                                    {(historyItems.analysis_reports?.length || 0) + (historyItems.blueprints?.length || 0) > 0 && (
+                                    {(historyItems.analysis_reports?.length || 0) + (MODE1_FOCUS ? 0 : (historyItems.blueprints?.length || 0)) > 0 && (
                                         <span className="ml-auto text-[10px] font-bold bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full">
-                                            {(historyItems.analysis_reports?.length || 0) + (historyItems.blueprints?.length || 0)}
+                                            {(historyItems.analysis_reports?.length || 0) + (MODE1_FOCUS ? 0 : (historyItems.blueprints?.length || 0))}
                                         </span>
                                     )}
                                 </button>
@@ -1392,7 +1502,7 @@
                             {view === 'HOME' && (
                                 <div className="fade-in">
                                     {/* TWO MODES */}
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto mb-16">
+                                    <div className={`grid gap-8 mx-auto mb-16 ${MODE1_FOCUS ? 'grid-cols-1 max-w-xl' : 'grid-cols-1 md:grid-cols-2 max-w-4xl'}`}>
                                         {/* MODE 1 */}
                                         <div 
                                             onClick={() => setView('MODE1_INPUT')} 
@@ -1417,7 +1527,7 @@
                                             </div>
                                         </div>
 
-                                        {/* MODE 2 */}
+                                        {!MODE1_FOCUS && (
                                         <div 
                                             onClick={() => setView('MODE2_INPUT')} 
                                             className="group cursor-pointer"
@@ -1443,6 +1553,7 @@
                                                 </div>
                                             </div>
                                         </div>
+                                        )}
                                     </div>
                                 </div>
                             )}
@@ -1460,12 +1571,12 @@
                                 );
                                 const mergedAll = [
                                     ...filteredAudits.map(r => ({ kind: 'audit', data: r, at: r.created_at })),
-                                    ...filteredBlueprints.map(b => ({ kind: 'blueprint', data: b, at: b.created_at })),
+                                    ...(MODE1_FOCUS ? [] : filteredBlueprints.map(b => ({ kind: 'blueprint', data: b, at: b.created_at }))),
                                 ].sort((a, b) => new Date(b.at) - new Date(a.at));
                                 const showList = historyFilter === 'all' ? mergedAll
                                     : historyFilter === 'audits' ? filteredAudits.map(r => ({ kind: 'audit', data: r, at: r.created_at }))
                                     : filteredBlueprints.map(b => ({ kind: 'blueprint', data: b, at: b.created_at }));
-                                const isEmpty = !historyLoading && audits.length === 0 && blueprints.length === 0;
+                                const isEmpty = !historyLoading && audits.length === 0 && (MODE1_FOCUS || blueprints.length === 0);
                                 const noResults = !historyLoading && showList.length === 0 && !isEmpty;
 
                                 return (
@@ -1478,7 +1589,7 @@
                                                 </div>
                                                 <div>
                                                     <h2 className="text-2xl font-bold text-slate-900">Your History</h2>
-                                                    <p className="text-slate-500 text-sm">Every URL audit and blueprint you run is saved here. Click any item to open it again.</p>
+                                                    <p className="text-slate-500 text-sm">{MODE1_FOCUS ? 'Every URL audit you run is saved here. Click any item to open it again.' : 'Every URL audit and blueprint you run is saved here. Click any item to open it again.'}</p>
                                                 </div>
                                             </div>
                                             <div className="flex flex-wrap gap-3 mt-5">
@@ -1489,6 +1600,7 @@
                                                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">URL Audits</p>
                                                     </div>
                                                 </div>
+                                                {!MODE1_FOCUS && (
                                                 <div className="bg-white border border-slate-200 rounded-xl px-4 py-3 flex items-center gap-3 min-w-[140px]">
                                                     <div className="w-9 h-9 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center"><i className="ph ph-layout"></i></div>
                                                     <div>
@@ -1496,6 +1608,7 @@
                                                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">Blueprints</p>
                                                     </div>
                                                 </div>
+                                                )}
                                             </div>
                                         </div>
 
@@ -1513,9 +1626,9 @@
                                             </div>
                                             <div className="flex gap-1 bg-slate-100 p-1 rounded-xl">
                                                 {[
-                                                    { id: 'all', label: 'All', count: mergedAll.length },
+                                                    ...(MODE1_FOCUS ? [] : [{ id: 'all', label: 'All', count: mergedAll.length }]),
                                                     { id: 'audits', label: 'Audits', count: filteredAudits.length },
-                                                    { id: 'blueprints', label: 'Blueprints', count: filteredBlueprints.length },
+                                                    ...(MODE1_FOCUS ? [] : [{ id: 'blueprints', label: 'Blueprints', count: filteredBlueprints.length }]),
                                                 ].map(tab => (
                                                     <button key={tab.id} onClick={() => setHistoryFilter(tab.id)}
                                                         className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${historyFilter === tab.id ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
@@ -1542,10 +1655,12 @@
                                                     <i className="ph ph-folder-open text-3xl text-slate-400"></i>
                                                 </div>
                                                 <h3 className="font-bold text-slate-800 mb-2">No history yet</h3>
-                                                <p className="text-sm text-slate-500 mb-6 max-w-sm mx-auto">Run your first URL audit or generate a blueprint — it will appear here automatically.</p>
+                                                <p className="text-sm text-slate-500 mb-6 max-w-sm mx-auto">Run your first URL audit — it will appear here automatically.</p>
                                                 <div className="flex gap-3 justify-center">
                                                     <button onClick={() => setView('MODE1_INPUT')} className="px-5 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700">Audit a URL</button>
+                                                    {!MODE1_FOCUS && (
                                                     <button onClick={() => setView('MODE2_INPUT')} className="px-5 py-2.5 bg-purple-600 text-white rounded-xl text-sm font-bold hover:bg-purple-700">Create Blueprint</button>
+                                                    )}
                                                 </div>
                                             </div>
                                         ) : noResults ? (
@@ -1678,7 +1793,7 @@
                             )}
 
                             {/* ── VIEW: MODE 2 INPUT (Chat UI) ── */}
-                            {view === 'MODE2_INPUT' && (
+                            {!MODE1_FOCUS && view === 'MODE2_INPUT' && (
                                 <div className="fade-in mt-8 max-w-3xl mx-auto">
                                     <h1 className="text-3xl font-extrabold text-slate-900 mb-2">Refine Your Brief (Chat)</h1>
                                     <p className="text-slate-500 mb-4">Chat with the assistant and upload files to improve the blueprint.</p>
@@ -1724,7 +1839,7 @@
                             )}
 
                             {/* ── VIEW: LOADING SPINNERS ── */}
-                            {(view === 'ANALYZING' || view === 'RESEARCHING') && (
+                            {(view === 'ANALYZING' || (!MODE1_FOCUS && view === 'RESEARCHING')) && (
                                 <div className="fade-in flex flex-col items-center justify-center mt-32">
                                     <div className="radar-spinner mb-8 flex items-center justify-center">
                                         <i className={`ph ${view==='ANALYZING'?'ph-magnifying-glass text-indigo-500':'ph-globe-hemisphere-west text-purple-500'} text-3xl animate-pulse`}></i>
@@ -1759,7 +1874,7 @@
                                 const compScore   = diagnosisRpt.score_breakdown?.competitor_position != null ? (diagnosisRpt.score_breakdown.competitor_position * 10).toFixed(0) : '--';
                                 const healthScore = diagnosisRpt.overall_health_score != null ? (diagnosisRpt.overall_health_score * 10).toFixed(0) : '--';
 
-                                const REPORT_TABS = [
+                                const REPORT_TABS_ALL = [
                                     { id: 'COMPARE', label: 'Live Compare' },
                                     { id: 'SEO', label: 'Google Ranking' },
                                     { id: 'AEO', label: 'AI Visibility' },
@@ -1770,6 +1885,12 @@
                                     { id: 'CONTENT', label: 'Content Studio' },
                                     { id: 'OPTIMIZED', label: 'AI Preview' },
                                 ];
+                                const tabCtx = { seoRpt, aeoRpt, uxRpt, competitorRpt, psychRpt, autofixRpt, contentRpt };
+                                const REPORT_TABS = REPORT_TABS_ALL.filter((t) => tabHasReportData(t.id, tabCtx));
+                                const hasAutofixTab = REPORT_TABS.some((t) => t.id === 'AUTOFIX');
+                                const activeReportTab = REPORT_TABS.some((t) => t.id === reportTab)
+                                    ? reportTab
+                                    : (REPORT_TABS[0]?.id || 'COMPARE');
 
                                 const getScoreColor = (val) => {
                                     if (val == null || val === '--') return 'text-gray-500';
@@ -2017,9 +2138,11 @@
                                                 <button onClick={() => showToast('Report PDF Downloaded!')} className="px-4 py-2 border border-slate-300 bg-white rounded-lg font-medium hover:bg-slate-50 flex items-center gap-2 text-slate-700">
                                                     <i className="ph ph-download-simple"></i> Download PDF
                                                 </button>
-                                                <button onClick={() => setReportTab('OPTIMIZED')} className="px-5 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 flex items-center gap-2">
-                                                    <i className="ph ph-eye"></i> See AI Preview
-                                                </button>
+                                                {hasAutofixTab && (
+                                                    <button onClick={() => setReportTab('OPTIMIZED')} className="px-5 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 flex items-center gap-2">
+                                                        <i className="ph ph-eye"></i> See AI Preview
+                                                    </button>
+                                                )}
                                             </div>
                                         </div>
 
@@ -2052,14 +2175,14 @@
 
                                         <div className="flex flex-wrap gap-2 mb-6 border-b border-slate-200 pb-3">
                                             {REPORT_TABS.map(tab => (
-                                                <button key={tab.id} onClick={() => setReportTab(tab.id)} className={`px-3 py-2 rounded-lg text-xs font-bold transition-all ${reportTab === tab.id ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                                                <button key={tab.id} onClick={() => setReportTab(tab.id)} className={`px-3 py-2 rounded-lg text-xs font-bold transition-all ${activeReportTab === tab.id ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
                                                     {tab.label}
                                                 </button>
                                             ))}
                                         </div>
 
                                         <div className="space-y-6">
-                                            {reportTab === 'COMPARE' && (() => {
+                                            {activeReportTab === 'COMPARE' && (() => {
                                                 const lc = competitorRpt.live_compare || {};
                                                 const sites = lc.sites || [];
                                                 const rows = lc.rows || [];
@@ -2085,13 +2208,17 @@
                                                             <p className="text-xs mt-1 text-cyan-800">
                                                                 Compare mode: <strong>{compareAsLabel}</strong> · Matching <strong>{pageTypeLabel}</strong> across all sites.
                                                             </p>
+                                                            <p className="text-xs mt-2 text-cyan-800/90 border-t border-cyan-200/60 pt-2">
+                                                                <strong>How numbers are calculated:</strong> {lc.metrics_note || 'Each metric is measured only on the exact URL in each card (one homepage or one product page), from live HTML at audit time — not store-wide or estimated.'}
+                                                                {' '}Row labels like &ldquo;Words on this page&rdquo; = that URL only. Competitors are discovered by your industry (not hardcoded).
+                                                            </p>
                                                         </div>
                                                     </div>
                                                     <div className={`grid gap-4 ${sites.length <= 2 ? 'grid-cols-1 md:grid-cols-2' : sites.length === 3 ? 'grid-cols-1 md:grid-cols-3' : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-4'}`}>
                                                         {sites.map((site, i) => (
                                                             <div key={i} className={`rounded-xl border overflow-hidden bg-white shadow-sm ${i === 0 ? 'border-indigo-400 ring-2 ring-indigo-100' : 'border-slate-200'}`}>
                                                                 <div className={`px-3 py-2 text-xs font-bold flex justify-between items-center gap-2 ${i === 0 ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700'}`}>
-                                                                    <span className="truncate">{i === 0 ? '★ Your site' : site.name}</span>
+                                                                    <span className="truncate">{i === 0 ? 'You (Live HTML)' : site.name}</span>
                                                                     <div className="flex items-center gap-1 shrink-0">
                                                                         {!site.scrape_ok && site.role !== 'you' && <span className="text-red-500 text-[9px]">Failed</span>}
                                                                         <span className={`text-[9px] px-1.5 py-0.5 rounded ${i === 0 ? 'bg-indigo-500' : 'bg-white text-slate-500'}`}>{pageType === 'homepage' ? 'Homepage' : 'Product'}</span>
@@ -2115,15 +2242,22 @@
                                                                 <thead>
                                                                     <tr className="bg-slate-50 border-b">
                                                                         <th className="text-left p-3 font-bold text-slate-600">Feature</th>
-                                                                        {sites.filter(s => s.scrape_ok).map((s, i) => (
-                                                                            <th key={i} className={`p-3 font-bold text-center ${i === 0 ? 'text-indigo-700 bg-indigo-50/50' : 'text-slate-600'}`}>{i === 0 ? 'You' : s.name}</th>
+                                                                        {sites.filter(s => s.scrape_ok || s.role === 'you').map((site, i) => (
+                                                                            <th key={i} className={`p-3 font-bold text-center ${i === 0 ? 'text-indigo-700 bg-indigo-50/50' : 'text-slate-600'}`}>
+                                                                                {i === 0 ? 'You (Live HTML)' : site.name}
+                                                                            </th>
                                                                         ))}
                                                                     </tr>
                                                                 </thead>
                                                                 <tbody>
                                                                     {rows.map((row, ri) => (
                                                                         <tr key={ri} className="border-b last:border-0 hover:bg-slate-50/50">
-                                                                            <td className="p-3 font-medium text-slate-800">{row.label}</td>
+                                                                            <td className="p-3 font-medium text-slate-800">
+                                                                                <div>{row.label}</div>
+                                                                                {COMPARE_METRIC_HELP[row.key] && (
+                                                                                    <p className="text-[10px] text-slate-400 font-normal mt-0.5 max-w-xs">{COMPARE_METRIC_HELP[row.key]}</p>
+                                                                                )}
+                                                                            </td>
                                                                             {(row.values || []).map((v, vi) => (
                                                                                 <td key={vi} className={`p-3 text-center ${row.best_index === vi ? 'bg-emerald-50 font-bold text-emerald-700' : vi === 0 && !row.you_win ? 'bg-red-50/50 text-red-700' : 'text-slate-600'}`}>
                                                                                     {fmtVal(v, row.key)}{row.best_index === vi ? ' ★' : ''}
@@ -2152,7 +2286,7 @@
                                                 </div>
                                                 );
                                             })()}
-                                            {reportTab === 'OPTIMIZED' && (
+                                            {activeReportTab === 'OPTIMIZED' && (
                                                 <div className="space-y-4">
                                                     <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 text-sm text-emerald-900">
                                                         <strong>AI-optimized preview</strong> — based on scraped data and agent recommendations from your 10-agent audit.
@@ -2181,7 +2315,7 @@
                                                     </div>
                                                 </div>
                                             )}
-                                            {reportTab === 'SEO' && (
+                                            {activeReportTab === 'SEO' && (
                                                 <div className="space-y-6">
                                                     <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 flex gap-3">
                                                         <i className="ph ph-info text-indigo-600 text-xl shrink-0 mt-0.5"></i>
@@ -2205,41 +2339,7 @@
                                                         </div>
                                                     </div>
 
-                                                    <div style={{ display: 'grid', gridTemplateColumns: '55% 45%', gap: '24px', alignItems: 'start' }}>
-                                                        <div style={{ position: 'sticky', top: '80px' }}>
-                                                            {screenshotLoading && <LoadingSpinner text="Taking screenshot..." />}
-                                                            {screenshotData && !screenshotLoading && (
-                                                                <div style={{ borderRadius: '12px', overflow: 'hidden', border: '1px solid #e2e8f0' }}>
-                                                                    <div style={{ background: '#1e293b', padding: '8px 12px', display: 'flex', gap: '6px', alignItems: 'center' }}>
-                                                                        <div style={{ width: '10px', height: '10px', background: '#ef4444', borderRadius: '50%' }} />
-                                                                        <div style={{ width: '10px', height: '10px', background: '#f59e0b', borderRadius: '50%' }} />
-                                                                        <div style={{ width: '10px', height: '10px', background: '#22c55e', borderRadius: '50%' }} />
-                                                                        <span style={{ color: '#94a3b8', fontSize: '11px', marginLeft: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{analyzedUrl || urlInput}</span>
-                                                                    </div>
-                                                                    <img
-                                                                        src={`data:image/png;base64,${screenshotData}`}
-                                                                        style={{ width: '100%', display: 'block' }}
-                                                                        alt="Annotated screenshot"
-                                                                    />
-                                                                </div>
-                                                            )}
-                                                            {!screenshotData && !screenshotLoading && !screenshotAvailable && (
-                                                                <div style={{ padding: '16px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '12px', fontSize: '13px', color: '#92400e', lineHeight: 1.5 }}>
-                                                                    <strong>Screenshots unavailable on Vercel.</strong> Playwright needs a full server (Render/Docker) or local dev with <code style={{ fontSize: '11px' }}>SKIP_PLAYWRIGHT=false</code> and <code style={{ fontSize: '11px' }}>playwright install chromium</code>.
-                                                                </div>
-                                                            )}
-                                                            {!screenshotData && !screenshotLoading && screenshotAvailable && (
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={fetchScreenshot}
-                                                                    style={{ width: '100%', padding: '16px', background: '#f1f5f9', border: '2px dashed #cbd5e1', borderRadius: '12px', cursor: 'pointer', fontWeight: 600, color: '#64748b' }}
-                                                                >
-                                                                    📸 Load Annotated Screenshot
-                                                                </button>
-                                                            )}
-                                                        </div>
-
-                                                        <div className="space-y-6">
+                                                    <div className="space-y-6">
                                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                                         <SectionCard title="Title Tag" rightElement={<span className="text-xs font-bold text-slate-400">Score: {seoRpt.title_tag?.score}/10</span>}>
                                                             <p className="text-slate-800 font-medium mb-2">{seoRpt.title_tag?.value || '—'}</p>
@@ -2332,12 +2432,11 @@
                                                             </ul>
                                                         </SectionCard>
                                                     </div>
-                                                        </div>
                                                     </div>
                                                 </div>
                                             )}
 
-                                            {reportTab === 'AEO' && (
+                                            {activeReportTab === 'AEO' && (
                                                 <div className="space-y-6">
                                                     <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 flex gap-3">
                                                         <i className="ph ph-info text-indigo-600 text-xl shrink-0 mt-0.5"></i>
@@ -2431,7 +2530,7 @@
                                                 </div>
                                             )}
 
-                                            {reportTab === 'UX' && (
+                                            {activeReportTab === 'UX' && (
                                                 <div className="space-y-6">
                                                     <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 flex gap-3">
                                                         <i className="ph ph-info text-indigo-600 text-xl shrink-0 mt-0.5"></i>
@@ -2527,7 +2626,7 @@
                                                 </div>
                                             )}
 
-                                            {reportTab === 'COMPETITOR' && (
+                                            {activeReportTab === 'COMPETITOR' && (
                                                 <div className="space-y-6">
                                                     <div className="bg-cyan-50 border border-cyan-100 rounded-xl p-4 flex gap-3">
                                                         <i className="ph ph-chart-line-up text-cyan-600 text-xl shrink-0"></i>
@@ -2631,7 +2730,7 @@
                                                 </div>
                                             )}
 
-                                            {reportTab === 'PSYCHOLOGY' && (
+                                            {activeReportTab === 'PSYCHOLOGY' && (
                                                 <div className="space-y-6">
                                                     <div className="bg-orange-50 border border-orange-100 rounded-xl p-4 flex gap-3">
                                                         <i className="ph ph-brain text-orange-600 text-xl shrink-0"></i>
@@ -2727,8 +2826,13 @@
                                                 </div>
                                             )}
 
-                                            {reportTab === 'AUTOFIX' && (
+                                            {activeReportTab === 'AUTOFIX' && (
                                                 <div className="space-y-8">
+                                                    {!tabHasReportData('AUTOFIX', tabCtx) && (
+                                                        <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 text-sm text-amber-900">
+                                                            <strong>Auto-Fix not generated for this run.</strong> Re-run the audit or check Content Studio for copy-ready outputs.
+                                                        </div>
+                                                    )}
                                                     {(autofixRpt.estimated_seo_score_improvement || autofixRpt.estimated_ai_visibility_improvement) && (
                                                         <div className="flex flex-wrap gap-3">
                                                             {autofixRpt.estimated_seo_score_improvement != null && (
@@ -2857,14 +2961,38 @@
                                                 </div>
                                             )}
 
-                                            {reportTab === 'CONTENT' && (
+                                            {activeReportTab === 'CONTENT' && (
                                                 <div className="space-y-6">
                                                     <div className="bg-violet-50 border border-violet-100 rounded-xl p-4 flex gap-3">
                                                         <i className="ph ph-pen-nib text-violet-600 text-xl shrink-0"></i>
-                                                        <div className="text-sm text-violet-900">
+                                                        <div className="text-sm text-violet-900 flex-1">
                                                             <p className="font-semibold mb-1">Copy-paste ready content for your store</p>
-                                                            <p className="text-violet-800/90">Every piece of content below is written and optimized by AI — product descriptions, FAQs, social captions, email subject lines, and A/B test variants. Just copy and use.</p>
+                                                            <p className="text-violet-800/90">Core meta and product copy load instantly. FAQs, social captions, email, and A/B variants generate on demand to save time and tokens.</p>
                                                             <AgentMetaBadge meta={getAgentMeta('content_gen_agent')} />
+                                                            {contentRpt._lazy && mode1Result?.report_id && (
+                                                                <button
+                                                                    type="button"
+                                                                    className="mt-3 inline-flex items-center gap-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-60"
+                                                                    disabled={contentGenLoading}
+                                                                    onClick={async () => {
+                                                                        setContentGenLoading(true);
+                                                                        try {
+                                                                            const res = await apiFetch(`/api/v1/analyze/pdp/${mode1Result.report_id}/generate-content`, {
+                                                                                method: 'POST',
+                                                                                body: { sections: contentRpt._lazy_sections?.length ? contentRpt._lazy_sections : [] },
+                                                                            });
+                                                                            setMode1Result(prev => prev ? { ...prev, generated_content: res.generated_content } : prev);
+                                                                        } catch (e) {
+                                                                            alert(e.message || 'Content generation failed');
+                                                                        } finally {
+                                                                            setContentGenLoading(false);
+                                                                        }
+                                                                    }}
+                                                                >
+                                                                    <i className={`ph ${contentGenLoading ? 'ph-spinner' : 'ph-sparkle'}`}></i>
+                                                                    {contentGenLoading ? 'Generating…' : 'Generate FAQs, social & email copy'}
+                                                                </button>
+                                                            )}
                                                         </div>
                                                     </div>
 
@@ -3075,7 +3203,7 @@
                             )}
 
                             {/* ── VIEW: MODE 2 SELECT LAYOUT ── */}
-                            {view === 'SELECT_LAYOUT' && (
+                            {!MODE1_FOCUS && view === 'SELECT_LAYOUT' && (
                                 <div className="fade-in mt-6">
                                     <div className="mb-8">
                                         <span className="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-bold mb-3 inline-block"><i className="ph ph-robot"></i> PDP Researcher Agent</span>
@@ -3086,8 +3214,8 @@
 
                                     <div className="grid grid-cols-3 gap-6">
                                         {[
-                                            { title: competitorSites[0]?.name || competitorPats[0] || 'Competitor A', desc: competitorSites[0]?.style || 'Image-heavy, low text.', siteUrl: competitorSites[0]?.url, recommended: false },
-                                            { title: competitorSites[1]?.name || competitorPats[1] || 'Competitor B', desc: competitorSites[1]?.style || 'Reviews & material details.', siteUrl: competitorSites[1]?.url, recommended: false },
+                                            { title: competitorPats[0] || 'Competitor A', desc: 'Live-scraped competitor pattern.', siteUrl: null, recommended: false },
+                                            { title: competitorPats[1] || 'Competitor B', desc: 'Live-scraped competitor pattern.', siteUrl: null, recommended: false },
                                             { title: blueprint.blueprint_title || 'AI Hybrid Blueprint', desc: blueprint.copy_tone_guide?.slice(0, 80) || blueprint.executive_summary?.slice(0, 80) || 'Optimized for your product.', img: categoryImages[0], recommended: true }
                                         ].map((layout, i) => (
                                             <div key={i} onClick={() => setView('VISUALIZER_MODE2')} className={`p-4 rounded-xl border cursor-pointer shadow-sm group relative overflow-hidden ${layout.recommended ? 'bg-indigo-50 border-2 border-indigo-500 shadow-md' : 'bg-white border-slate-200 hover:border-indigo-400'}`}>
@@ -3113,7 +3241,7 @@
                             )}
 
                             {/* ── VIEW: MODE 2 VISUALIZER & COPILOT CHAT ── */}
-                            {view === 'VISUALIZER_MODE2' && (
+                            {!MODE1_FOCUS && view === 'VISUALIZER_MODE2' && (
                                 <div className="fade-in h-[75vh] flex flex-col">
                                     <div className="flex justify-between items-end mb-4">
                                         <div>
@@ -3368,7 +3496,6 @@
                     authUser={authUser}
                     authProvider={authProvider}
                     authError={authError}
-                    screenshotAvailable={!!config?.screenshot_available}
                 />
             );
         }

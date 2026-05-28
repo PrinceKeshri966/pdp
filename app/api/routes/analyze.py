@@ -35,6 +35,7 @@ from uuid import UUID
 from anthropic import APIStatusError
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_tenant, get_db_user
@@ -48,6 +49,8 @@ from app.schemas.analyze import (
     AnalyzeBusinessResponse,
     AnalyzePDPRequest,
     AnalyzePDPResponse,
+    GenerateContentRequest,
+    GenerateContentResponse,
 )
 
 router = APIRouter(prefix="/analyze", tags=["Analyze"])
@@ -91,7 +94,11 @@ def _persist_mode1_report(report: AnalysisReport, final_state: dict) -> None:
     report.status = final_state.get("status", "completed")
     report.raw_markdown = final_state.get("markdown_content")
     report.scraper_method = final_state.get("scraper_method")
-    report.json_structured_data = final_state.get("json_structured_data") or {}
+    jsd = dict(final_state.get("json_structured_data") or {})
+    dom = final_state.get("dom_technical_seo") or {}
+    if dom:
+        jsd["_dom_technical_seo"] = dom
+    report.json_structured_data = jsd
     report.seo_report = final_state.get("seo_report") or {}
     report.aeo_report = final_state.get("aeo_report") or {}
     report.ux_report = final_state.get("ux_report") or {}
@@ -112,6 +119,14 @@ def _persist_mode1_report(report: AnalysisReport, final_state: dict) -> None:
         report.completed_at = datetime.now(timezone.utc)
 
 
+def _dom_from_state_or_report(final_state: dict, report: AnalysisReport) -> dict:
+    dom = final_state.get("dom_technical_seo") or {}
+    if dom:
+        return dom
+    jsd = report.json_structured_data or {}
+    return jsd.get("_dom_technical_seo") or {}
+
+
 def _mode1_response(report: AnalysisReport, final_state: dict, url: str) -> AnalyzePDPResponse:
     return AnalyzePDPResponse(
         report_id=report.id,
@@ -120,6 +135,7 @@ def _mode1_response(report: AnalysisReport, final_state: dict, url: str) -> Anal
         seo_score=report.seo_score,
         source_url=url,
         json_structured_data=report.json_structured_data,
+        dom_technical_seo=_dom_from_state_or_report(final_state, report),
         seo_report=report.seo_report,
         aeo_report=report.aeo_report,
         ux_report=report.ux_report,
@@ -315,6 +331,52 @@ async def analyze_pdp_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post(
+    "/pdp/{report_id}/generate-content",
+    response_model=GenerateContentResponse,
+    summary="On-demand Content Studio generation (lazy sections)",
+)
+async def generate_pdp_content(
+    report_id: UUID,
+    body: GenerateContentRequest,
+    db: AsyncSession = Depends(get_db),
+    db_user: User = Depends(get_db_user),
+    tenant: Tenant = Depends(get_db_tenant),
+) -> GenerateContentResponse:
+    from app.agents.content_gen_agent import generate_full_content
+
+    result = await db.execute(
+        select(AnalysisReport).where(
+            AnalysisReport.id == report_id,
+            AnalysisReport.tenant_id == tenant.id,
+            AnalysisReport.user_id == db_user.id,
+        )
+    )
+    report = result.scalar_one_or_none()
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
+    if report.status != "completed":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Report not ready")
+
+    try:
+        generated = await generate_full_content(
+            structured=report.json_structured_data or {},
+            seo_report=report.seo_report or {},
+            aeo_report=report.aeo_report or {},
+            diagnosis=report.final_diagnosis or {},
+            autofix_report=report.autofix_report or {},
+            existing=report.generated_content or {},
+            sections=body.sections or None,
+        )
+    except Exception as exc:
+        raise _pipeline_http_error(exc) from exc
+
+    report.generated_content = generated
+    await db.commit()
+    await db.refresh(report)
+    return GenerateContentResponse(report_id=report.id, generated_content=generated)
 
 
 # ── Mode 2: Business Brief → PDP Blueprint ───────────────────────────────────
