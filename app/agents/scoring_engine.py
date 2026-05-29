@@ -18,6 +18,8 @@ def compute_deterministic_scores(
     aeo_report: dict[str, Any] | None = None,
     scrape_validation: dict[str, Any] | None = None,
     extraction_confidence: dict[str, Any] | None = None,
+    page_type: str | None = None,
+    visual_ux_facts: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compute SEO/AEO/UX base scores from preprocessors and validation."""
     seo_facts = seo_facts or {}
@@ -71,13 +73,39 @@ def compute_deterministic_scores(
     ext_conf = float(ec.get("overall_extraction_confidence") or 1.0)
     quality_mult *= max(0.6, ext_conf)
 
+    caps_applied: list[str] = []
+    seo_out = _clamp(seo_det * quality_mult)
+    aeo_out = _clamp(aeo_det * quality_mult)
+    ux_out = _clamp(ux_det * quality_mult)
+
+    pt = (page_type or sv.get("page_type") or sv.get("detected_page_type") or "").lower()
+    if pt == "product":
+        pt = "pdp"
+    price_conf = float(
+        (ec.get("field_confidence") or {}).get("price", ec.get("price_confidence", 1)) or 0
+    )
+    if pt == "pdp" and price_conf == 0:
+        seo_out = min(seo_out, 5.5)
+        ux_out = min(ux_out, 5.5)
+        caps_applied.append("pdp_missing_price")
+
+    if not (seo_facts.get("structured_data") or {}).get("has_faq_schema"):
+        aeo_out = min(aeo_out, 6.5)
+        caps_applied.append("faq_schema_missing_aeo_cap")
+
+    visual = visual_ux_facts or {}
+    if not visual.get("capture_ok"):
+        ux_out = min(ux_out, 6.0)
+        caps_applied.append("no_visual_verification")
+
     return {
         "deterministic_scores": {
-            "seo": _clamp(seo_det * quality_mult),
-            "aeo": _clamp(aeo_det * quality_mult),
-            "ux": _clamp(ux_det * quality_mult),
+            "seo": seo_out,
+            "aeo": aeo_out,
+            "ux": ux_out,
         },
         "quality_multiplier": round(quality_mult, 2),
+        "score_caps_applied": caps_applied,
     }
 
 
@@ -105,4 +133,18 @@ def apply_reliability_caps(score: float, state: dict) -> float:
         s = min(s, 5.0)
     elif conf < 0.6:
         s = min(s, 6.5)
+    vr = state.get("validation_report") or {}
+    penalty = float(vr.get("confidence_penalty") or 0)
+    if penalty >= 0.2:
+        s = min(s, 5.5)
+    elif penalty >= 0.1:
+        s = min(s, 6.5)
+    if vr.get("hallucination_risk") == "high":
+        s = min(s, 5.5)
+    visual = state.get("visual_ux_facts") or {}
+    if not visual.get("capture_ok") and (state.get("audit_depth") or "") != "lightweight":
+        s = min(s, 7.0)
+    page = (state.get("page_type_info") or {}).get("page_type") or sv.get("page_type")
+    if page == "pdp" and conf < 0.5:
+        s = min(s, 5.5)
     return _clamp(s)

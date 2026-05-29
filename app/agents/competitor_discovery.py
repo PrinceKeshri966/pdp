@@ -29,6 +29,13 @@ _SKIP_DOMAINS = {
     "flipkart.com",
     "wikipedia.org",
 }
+# Marketplaces / aggregators — not direct D2C competitors
+_MARKETPLACE_DOMAINS = frozenset({
+    "amazon.in", "amazon.com", "flipkart.com", "myntra.com", "ajio.com",
+    "nykaa.com", "snapdeal.com", "paytmmall.com", "meesho.com",
+    "lifestylestores.com", "shoppersstop.com", "reliancedigital.in",
+    "croma.com", "tatacliq.com", "jiomart.com",
+})
 # Unrelated mega-brands when comparing D2C / retail / electronics homepages
 _UNRELATED_RETAIL_COMPETITORS = frozenset({
     "meta.com",
@@ -189,15 +196,39 @@ def _detect_vertical(
         )
     ):
         return "electronics"
-    if any(m in blob for m in ("fashion", "apparel", "clothing", "beauty", "skincare", "cosmetic")):
+    if any(m in blob for m in ("fashion", "apparel", "clothing", "beauty", "skincare", "cosmetic", "jeans", "denim")):
         return "fashion"
     return "general"
 
 
-def _is_irrelevant_competitor(user_domain: str, candidate_domain: str, vertical: str) -> bool:
+def _tokenize(text: str) -> set[str]:
+    return {t for t in re.split(r"[^a-z0-9]+", (text or "").lower()) if len(t) > 2}
+
+
+def _semantic_similarity(product_name: str, categories: list[str], candidate_url: str) -> float:
+    """Simple token overlap between product context and candidate URL/domain."""
+    ctx_tokens = _tokenize(" ".join(categories + [product_name or ""]))
+    cand_tokens = _tokenize(candidate_url)
+    if not ctx_tokens or not cand_tokens:
+        return 0.0
+    overlap = len(ctx_tokens & cand_tokens)
+    return overlap / max(len(ctx_tokens), 1)
+
+
+def _is_irrelevant_competitor(
+    user_domain: str,
+    candidate_domain: str,
+    vertical: str,
+    *,
+    product_name: str = "",
+    categories: list[str] | None = None,
+    candidate_url: str = "",
+) -> bool:
     if not candidate_domain or candidate_domain == user_domain:
         return True
     if candidate_domain in _SKIP_DOMAINS:
+        return True
+    if candidate_domain in _MARKETPLACE_DOMAINS:
         return True
     if vertical in ("electronics", "fashion", "fitness", "general"):
         if candidate_domain in _UNRELATED_RETAIL_COMPETITORS:
@@ -206,6 +237,20 @@ def _is_irrelevant_competitor(user_domain: str, candidate_domain: str, vertical:
             return True
         if candidate_domain.startswith(("about.", "blog.", "shop.")) and vertical == "electronics":
             return True
+    # Reject semantically unrelated candidates for PDP mode
+    if product_name and candidate_url:
+        sim = _semantic_similarity(product_name, categories or [], candidate_url)
+        ctx = _tokenize(product_name)
+        cand = _tokenize(candidate_domain)
+        if ctx and cand and not (ctx & cand) and sim < 0.05:
+            unrelated_verticals = {
+                "electronics": {"fashion", "beauty", "skincare", "gym", "fitness"},
+                "fashion": {"audio", "earbud", "speaker", "smartwatch", "electronics"},
+                "fitness": {"earbud", "skincare", "cosmetic", "jeans", "fashion"},
+            }
+            prod_vertical_tokens = unrelated_verticals.get(vertical, set())
+            if prod_vertical_tokens & cand:
+                return True
     return False
 
 
@@ -340,7 +385,12 @@ async def discover_competitor_urls(
                     dom = _domain(url)
                     if not dom or dom in seen_domains or dom == user_domain:
                         continue
-                    if _is_irrelevant_competitor(user_domain, dom, vertical):
+                    if _is_irrelevant_competitor(
+                        user_domain, dom, vertical,
+                        product_name=product_name,
+                        categories=categories,
+                        candidate_url=url,
+                    ):
                         continue
                     if any(dom == s or dom.endswith("." + s) for s in _SKIP_DOMAINS):
                         continue

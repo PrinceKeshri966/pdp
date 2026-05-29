@@ -131,7 +131,30 @@ def _dom_from_state_or_report(final_state: dict, report: AnalysisReport) -> dict
 
 
 def _mode1_response(report: AnalysisReport, final_state: dict, url: str) -> AnalyzePDPResponse:
-    jsd = report.json_structured_data or {}
+    from app.validators.sanitize_pipeline import sanitize_mode1_for_frontend
+
+    payload_state, _ = sanitize_mode1_for_frontend(
+        {
+            "url": url,
+            "seo_report": report.seo_report or {},
+            "aeo_report": report.aeo_report or {},
+            "ux_report": report.ux_report or {},
+            "competitor_report": report.competitor_report or {},
+            "psychology_report": report.psychology_report or {},
+            "final_diagnosis": report.final_diagnosis or {},
+            "autofix_report": report.autofix_report or {},
+            "json_structured_data": report.json_structured_data or {},
+            "dom_technical_seo": _dom_from_state_or_report(final_state, report),
+            "audit_reliability": (report.json_structured_data or {}).get("_audit_reliability") or final_state.get("audit_reliability") or {},
+            "scrape_validation": final_state.get("scrape_validation"),
+            "extraction_confidence": final_state.get("extraction_confidence"),
+            "validation_report": final_state.get("validation_report"),
+            "visual_ux_facts": final_state.get("visual_ux_facts"),
+            "page_type_info": final_state.get("page_type_info"),
+            "partial_analysis": final_state.get("partial_analysis"),
+        }
+    )
+    jsd = payload_state.get("json_structured_data") or report.json_structured_data or {}
     return AnalyzePDPResponse(
         report_id=report.id,
         status=report.status,
@@ -140,15 +163,15 @@ def _mode1_response(report: AnalysisReport, final_state: dict, url: str) -> Anal
         source_url=url,
         json_structured_data=report.json_structured_data,
         dom_technical_seo=_dom_from_state_or_report(final_state, report),
-        seo_report=report.seo_report,
-        aeo_report=report.aeo_report,
-        ux_report=report.ux_report,
+        seo_report=payload_state.get("seo_report") or report.seo_report,
+        aeo_report=payload_state.get("aeo_report") or report.aeo_report,
+        ux_report=payload_state.get("ux_report") or report.ux_report,
         competitor_report=report.competitor_report,
         psychology_report=report.psychology_report,
-        final_diagnosis=report.final_diagnosis,
-        autofix_report=report.autofix_report,
+        final_diagnosis=payload_state.get("final_diagnosis") or report.final_diagnosis,
+        autofix_report=payload_state.get("autofix_report") or report.autofix_report,
         generated_content=report.generated_content,
-        audit_reliability=jsd.get("_audit_reliability") or final_state.get("audit_reliability") or {},
+        audit_reliability=jsd.get("_audit_reliability") or payload_state.get("audit_reliability") or {},
         run_analytics=jsd.get("_run_analytics") or final_state.get("run_analytics") or {},
         agent_reports=final_state.get("agent_reports", []),
         errors=final_state.get("errors", []),

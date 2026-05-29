@@ -115,6 +115,18 @@ def merge_psychology_report(facts: dict[str, Any], llm: dict[str, Any]) -> dict[
 
 
 async def psychology_agent(state: AgentState) -> AgentState:
+    plan = state_dict(state, "agent_plan")
+    if not plan.get("run_psychology", True):
+        stub = {
+            "overall_psychology_score": 5.0,
+            "skipped": True,
+            "skip_reason": (plan.get("skipped_reasons") or {}).get("psychology", "agent plan"),
+        }
+        return {
+            "psychology_report": stub,
+            "agent_reports": [{"agent": "psychology_agent", "model": "skipped", "output": stub, "duration_ms": 0}],
+        }
+
     packages = state.get("agent_context_packages") or {}
     psych_ctx = packages.get("psychology")
     if not psych_ctx:

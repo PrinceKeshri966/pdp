@@ -10,8 +10,10 @@ import time
 from typing import Any
 
 from app.agents.claude_client import claude
-from app.agents.competitor_discovery import resolve_homepage_mode
 from app.agents.context_router import format_context_for_llm
+from app.core.page_type_router import is_pdp
+from app.rulesets.base import filter_pdp_leakage, ruleset_prompt_block
+from app.core.recommendation_meta import enrich_recommendation_list
 from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
 from app.agents.state import AgentState, state_dict
@@ -56,7 +58,8 @@ Return ONLY valid JSON:
 """.strip()
 
 
-def merge_ux_report(facts: dict[str, Any], llm: dict[str, Any]) -> dict[str, Any]:
+def merge_ux_report(facts: dict[str, Any], llm: dict[str, Any], *, page_type: str = "unknown") -> dict[str, Any]:
+    pdp_page = is_pdp(page_type)
     ctas = facts.get("cta_candidates") or []
     trust_n = len(facts.get("trust_badges") or [])
     trust_score = min(10.0, 4.0 + trust_n * 0.8) if trust_n else 3.0
@@ -92,14 +95,18 @@ def merge_ux_report(facts: dict[str, Any], llm: dict[str, Any]) -> dict[str, Any
             "money_back_guarantee": facts.get("money_back_guarantee", False),
             "score": round(trust_score, 1),
         },
-        "product_information": {
-            "size_guide_present": facts.get("has_size_guide", False),
-            "material_composition": False,
-            "care_instructions": False,
-            "fit_description": False,
-            "specifications_table": False,
-            "score": 6.0 if facts.get("has_size_guide") else 4.0,
-        },
+        "product_information": (
+            {
+                "size_guide_present": facts.get("has_size_guide", False),
+                "material_composition": False,
+                "care_instructions": False,
+                "fit_description": False,
+                "specifications_table": False,
+                "score": 6.0 if facts.get("has_size_guide") else 4.0,
+            }
+            if pdp_page
+            else {"applicable": False, "score": None, "note": "N/A for non-PDP page type"}
+        ),
         "mobile_ux": {
             "score": 7.0 if facts.get("mobile_ux_hints") else 5.0,
             "issues": [] if facts.get("mobile_ux_hints") else ["No explicit mobile UX signals in content"],
@@ -117,6 +124,7 @@ def merge_ux_report(facts: dict[str, Any], llm: dict[str, Any]) -> dict[str, Any
         "friction_points": llm.get("friction_points") or [],
         "conversion_blockers": llm.get("conversion_blockers") or [],
         "recommendations": llm.get("recommendations") or [],
+        "page_type": page_type,
         "_precomputed_facts": {k: v for k, v in facts.items() if not k.startswith("_")},
     }
 
@@ -134,13 +142,9 @@ async def ux_agent(state: AgentState) -> AgentState:
         markdown=state.get("markdown_content") or "",
     )
 
-    page_url = state.get("url") or ""
-    homepage_mode = resolve_homepage_mode(page_url, state.get("compare_as"))
-    page_note = (
-        "Page type: HOMEPAGE — score Get Started / app CTAs; missing Add to Cart is OK.\n\n"
-        if homepage_mode
-        else ""
-    )
+    page_info = state_dict(state, "page_type_info")
+    page_type = page_info.get("page_type") or state_dict(state, "scrape_validation").get("page_type") or "unknown"
+    page_note = ruleset_prompt_block(page_type) + "\n\n"
 
     logger.info("ux_agent.start", model=_MODEL)
     t0 = time.monotonic()
@@ -166,12 +170,22 @@ Analyze conversion friction and CRO opportunities only."""
     if parse_err:
         return {"errors": [parse_err]}
 
-    ux_report = merge_ux_report(ux_facts, llm_layer)
+    ux_report = merge_ux_report(ux_facts, llm_layer, page_type=page_type)
+    for key in ("friction_points", "conversion_blockers", "recommendations"):
+        filtered, flagged = filter_pdp_leakage(ux_report.get(key) or [], page_type)
+        ux_report[key] = filtered
+        if flagged:
+            ux_report.setdefault("_leakage_filtered", []).extend(flagged)
+
     visual = state_dict(state, "visual_ux_facts")
-    if visual.get("capture_ok"):
-        ux_report["cta_analysis"]["above_fold"] = ux_report["cta_analysis"].get("above_fold") or visual.get(
-            "cta_above_fold", False
-        )
+    visual_ok = bool(visual.get("capture_ok"))
+    if visual_ok:
+        vis_cta = bool(visual.get("cta_above_fold"))
+        ux_report["cta_analysis"]["above_fold"] = vis_cta
+        if not vis_cta and ux_report["cta_analysis"].get("above_fold"):
+            ux_report["cta_analysis"]["score"] = min(
+                float(ux_report["cta_analysis"].get("score") or 6), 5.0
+            )
         ux_report["trust_signals"]["security_badges"] = ux_report["trust_signals"].get(
             "security_badges"
         ) or visual.get("trust_badges_visible", False)
@@ -184,10 +198,19 @@ Analyze conversion friction and CRO opportunities only."""
         ux_facts=ux_facts,
         scrape_validation=state_dict(state, "scrape_validation"),
         extraction_confidence=state_dict(state, "extraction_confidence"),
+        page_type=page_type,
+        visual_ux_facts=visual,
     )
-    ux_report["conversion_score"] = apply_reliability_caps(
-        blend_score(det["deterministic_scores"]["ux"], ux_report.get("conversion_score")),
-        dict(state),
+    blended = blend_score(det["deterministic_scores"]["ux"], ux_report.get("conversion_score"))
+    if not visual_ok:
+        blended = min(blended, 6.5)
+    ux_report["conversion_score"] = apply_reliability_caps(blended, dict(state))
+    ux_report["recommendations_enriched"] = enrich_recommendation_list(
+        ux_report.get("recommendations") or [],
+        base_confidence=0.75 if visual_ok else 0.5,
+        source="visual+llm" if visual_ok else "llm",
+        page_type_validated=not ux_report.get("_leakage_filtered"),
+        visual_verified=visual_ok,
     )
 
     logger.info("ux_agent.done", score=ux_report.get("conversion_score"), duration_ms=duration_ms)

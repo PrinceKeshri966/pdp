@@ -1,16 +1,85 @@
+# Environment & secrets
 .env
 .env.*
-.env.example
+!.env.example
 .env.local
+
+# Python
 *.pyc
 __pycache__/
+*.pyo
+*.pyd
+.Python
 .venv/
 venv/
-*.db
+env/
+*.egg-info/
+dist/
+build/
 .pytest_cache/
 .mypy_cache/
-.DS_Store
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node (if added later)
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Local runtime & logs
 *.log
+logs/
+tmp/
+temp/
 agent-tools/
 patch_*.py
 apply_*.py
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Playwright / browser caches
+.playwright/
+playwright-report/
+test-results/
+.ms-playwright/
+
+# Local exports & generated audit artifacts (never commit)
+exports/mass_tests/
+exports/extraction_reliability/
+exports/cto_validation/
+exports/benchmarks/
+exports/**/*.png
+exports/**/*.jpg
+exports/**/*.jpeg
+exports/**/*.webp
+exports/**/*.gif
+exports/**/*.json
+exports/**/*.md
+exports/**/*.html
+!exports/.gitkeep
+
+# Screenshots & local captures
+screenshots/
+ui_screenshots/
+**/screenshot_*.png
+**/screenshot_*.jpg
+
+# Local domain memory (runtime-learned, optional local only)
+data/domain_extraction_memory.json
+
+# Database
+*.db
+*.sqlite3
+
+# Vercel local
+.vercel

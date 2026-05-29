@@ -111,6 +111,17 @@ Copy `.env.example` to `.env` for local development. **Never commit `.env`.**
 
 ---
 
+## Before GitHub push
+
+Local-only artifacts are gitignored (`exports/`, `__pycache__/`, logs, Playwright cache, screenshots). Mass-test and benchmark outputs stay on your machine — scripts still write to `exports/` at runtime.
+
+```bash
+# Optional: clear local exports before push
+Remove-Item -Recurse -Force exports\mass_tests, exports\extraction_reliability -ErrorAction SilentlyContinue
+```
+
+---
+
 ## API
 
 - `GET /` — Frontend UI  

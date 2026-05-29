@@ -9,6 +9,8 @@ from typing import Any
 
 from app.agents.state import AgentState, state_dict
 from app.core.logging import get_logger
+from app.core.demo_mode import is_demo_mode
+from app.core.page_type_router import detect_page_type
 
 logger = get_logger(__name__)
 
@@ -18,7 +20,9 @@ _MIN_WORDS_LOW = 50
 
 _CAPTCHA = re.compile(
     r"(captcha|recaptcha|hcaptcha|verify you are human|access denied|"
-    r"please enable javascript|cloudflare|attention required|bot detection)",
+    r"please enable javascript|attention required|bot detection|"
+    r"cf-browser-verification|checking your browser|just a moment|"
+    r"enable cookies to continue)",
     re.I,
 )
 _LOGIN_WALL = re.compile(
@@ -62,7 +66,11 @@ def validate_scrape(
     warnings: list[str] = []
     missing_sections: list[str] = []
 
-    possible_bot_block = bool(_CAPTCHA.search(combined) or "cf-browser-verification" in html)
+    possible_bot_block = bool(
+        _CAPTCHA.search(text)
+        or "cf-browser-verification" in html
+        or ("challenge-platform" in html and word_count < _MIN_WORDS_MEDIUM)
+    )
     login_wall = bool(_LOGIN_WALL.search(combined))
     is_js_heavy = bool(
         re.search(r"__NEXT_DATA__|reactroot|ng-version|data-reactroot|shopify", html)
@@ -98,20 +106,28 @@ def validate_scrape(
         warnings.append("Heavy JavaScript site with thin extracted text")
 
     product_schema = bool(dom.get("product_schema_present")) or bool(_PRODUCT_JSON.search(html))
-    if _HOMEPAGE_SIGNAL.search(combined[:3000]) and not product_schema:
-        detected_page_type = "homepage"
-    elif product_schema or (has_price and has_product_name):
-        detected_page_type = "product"
+    page_detection = detect_page_type(
+        url=url,
+        markdown=text,
+        scrape_html=scrape_html,
+        dom_technical_seo=dom,
+    )
+    detected_page_type = page_detection["page_type"]
+    if detected_page_type == "pdp":
+        detected_page_type_legacy = "product"
     else:
-        detected_page_type = "unknown"
+        detected_page_type_legacy = detected_page_type if detected_page_type != "unknown" else (
+            "homepage" if _HOMEPAGE_SIGNAL.search(combined[:3000]) and not product_schema
+            else ("product" if product_schema or (has_price and has_product_name) else "unknown")
+        )
 
-    if detected_page_type == "homepage":
+    if detected_page_type in ("homepage", "saas_landing", "blog"):
         if "pricing" in missing_sections and has_cta:
             missing_sections.remove("pricing")
 
     # Completeness 0-1
     checks = [has_title, has_product_name, word_count >= _MIN_WORDS_LOW, not possible_bot_block, not login_wall]
-    if detected_page_type == "product":
+    if detected_page_type in ("pdp", "product", "marketplace"):
         checks.extend([has_price or has_cta])
     content_completeness_score = round(sum(1 for c in checks if c) / max(len(checks), 1), 2)
 
@@ -142,7 +158,10 @@ def validate_scrape(
         "possible_bot_block": possible_bot_block,
         "content_completeness_score": content_completeness_score,
         "missing_sections": missing_sections,
-        "detected_page_type": detected_page_type,
+        "detected_page_type": detected_page_type_legacy,
+        "page_type": detected_page_type,
+        "page_type_confidence": page_detection.get("confidence"),
+        "page_type_reasons": page_detection.get("reasons", []),
         "usable_for_analysis": usable_for_analysis,
         "warnings": warnings,
         "word_count": word_count,
@@ -150,16 +169,17 @@ def validate_scrape(
 
 
 async def enhanced_scrape_retry(state: AgentState) -> dict[str, Any] | None:
-    """Try Playwright then Firecrawl when validation failed."""
+    """Try Playwright PDP pipeline then Firecrawl when validation failed."""
     from app.agents.scraper_agent import (
         _backfill_dom_metadata,
         _fetch_with_firecrawl,
-        _fetch_with_jina,
         _fetch_with_playwright,
         _playwright_enabled,
         _try_fetch,
     )
     from app.core.config import get_settings
+    from app.core.extraction.playwright_pdp import fetch_pdp_with_playwright, url_looks_like_pdp
+    from app.core.page_type_router import is_pdp
 
     url = (state.get("url") or "").strip()
     if not url:
@@ -170,8 +190,28 @@ async def enhanced_scrape_retry(state: AgentState) -> dict[str, Any] | None:
     best_html = state.get("scrape_html") or ""
     best_dom = state_dict(state, "dom_technical_seo")
     method = state.get("scraper_method") or "retry"
+    best_network = state.get("network_payloads") or []
+    best_platform = state.get("platform_info")
 
-    if _playwright_enabled():
+    sv = state_dict(state, "scrape_validation")
+    pt = (state_dict(state, "page_type_info").get("page_type") or sv.get("page_type") or "")
+    use_pdp_pw = _playwright_enabled() and (is_pdp(pt) or url_looks_like_pdp(url) or sv.get("is_js_heavy"))
+
+    if use_pdp_pw:
+        try:
+            pdp = await fetch_pdp_with_playwright(url)
+            text = (pdp.get("markdown_content") or "").strip()
+            if text and len(text) > len(best_content):
+                best_content = text
+                best_dom = pdp.get("dom_technical_seo") or best_dom
+                best_html = pdp.get("scrape_html") or best_html
+                best_network = pdp.get("network_payloads") or best_network
+                best_platform = pdp.get("platform_info") or best_platform
+                method = "playwright_pdp_retry"
+        except Exception:
+            pass
+
+    if _playwright_enabled() and len(best_content) < 2500 and method != "playwright_pdp_retry":
         text, dom, html_snip, err = await _try_fetch("playwright_retry", _fetch_with_playwright, url)
         if text and len(text) > len(best_content):
             best_content, best_dom, best_html, method = text, dom, html_snip, "playwright_retry"
@@ -185,12 +225,17 @@ async def enhanced_scrape_retry(state: AgentState) -> dict[str, Any] | None:
         return None
 
     best_dom = await _backfill_dom_metadata(url, best_dom)
-    return {
+    out: dict[str, Any] = {
         "markdown_content": best_content,
         "scrape_html": best_html,
         "dom_technical_seo": best_dom,
         "scraper_method": method,
     }
+    if best_network:
+        out["network_payloads"] = best_network
+    if best_platform:
+        out["platform_info"] = best_platform
+    return out
 
 
 async def scrape_quality_agent(state: AgentState) -> AgentState:
@@ -212,7 +257,8 @@ async def scrape_quality_agent(state: AgentState) -> AgentState:
     retries = int(state.get("scrape_retry_count") or 0)
     retry_methods: list[str] = []
 
-    if not validation["usable_for_analysis"] and retries < 2:
+    max_retries = 0 if is_demo_mode() else 2
+    if not validation["usable_for_analysis"] and retries < max_retries:
         logger.info("scrape_quality.retry", url=state.get("url"), attempt=retries + 1)
         retry_update = await enhanced_scrape_retry(state)
         if retry_update:
@@ -242,9 +288,21 @@ async def scrape_quality_agent(state: AgentState) -> AgentState:
             "Partial audit only — page content may be incomplete. Do not treat scores as definitive."
         ]
 
+    page_info = detect_page_type(
+        url=state.get("url") or "",
+        markdown=validation and (state.get("markdown_content") or ""),
+        scrape_html=state.get("scrape_html") or "",
+        dom_technical_seo=state_dict(state, "dom_technical_seo"),
+    )
+    if validation.get("page_type"):
+        page_info["page_type"] = validation["page_type"]
+        page_info["confidence"] = validation.get("page_type_confidence") or page_info["confidence"]
+        page_info["reasons"] = validation.get("page_type_reasons") or page_info["reasons"]
+
     duration_ms = int((time.monotonic() - t0) * 1000)
     return {
         "scrape_validation": validation,
+        "page_type_info": page_info,
         "partial_analysis": partial,
         "agent_reports": [
             {

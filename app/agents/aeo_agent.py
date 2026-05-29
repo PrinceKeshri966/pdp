@@ -15,8 +15,8 @@ from __future__ import annotations
 import time
 
 from app.agents.claude_client import claude
-from app.agents.competitor_discovery import resolve_homepage_mode
 from app.agents.context_router import format_context_for_llm
+from app.rulesets.base import ruleset_prompt_block
 from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
 from app.agents.state import AgentState, state_dict
@@ -103,17 +103,30 @@ async def aeo_agent(state: AgentState) -> AgentState:
         return {"errors": ["aeo_agent: no agent_context_packages.aeo"]}
 
     structured = state_dict(state, "json_structured_data")
-
-    logger.info("aeo_agent.start", model=_MODEL)
+    plan = state_dict(state, "agent_plan")
+    page_type = state_dict(state, "page_type_info").get("page_type") or "unknown"
+    seo_facts = state_dict(state, "seo_preprocessor_facts")
     t0 = time.monotonic()
 
-    page_url = state.get("url") or ""
-    homepage_mode = resolve_homepage_mode(page_url, state.get("compare_as"))
-    page_note = (
-        "Page type: HOMEPAGE. Missing Product schema is normal; score Organization/WebSite/FAQ schema instead.\n\n"
-        if homepage_mode
-        else ""
-    )
+    if not plan.get("run_aeo_deep", True):
+        has_faq = bool((seo_facts.get("structured_data") or {}).get("has_faq_schema"))
+        score = 5.5 if has_faq else 4.0
+        aeo_report = {
+            "ai_visibility_score": score,
+            "structured_data": {"faq_schema": has_faq},
+            "gaps": [] if has_faq else ["Add FAQPage schema for AI answer engines"],
+            "recommendations": [] if has_faq else ["Deploy FAQ schema with real Q&A"],
+            "_lightweight": True,
+        }
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        return {
+            "aeo_report": aeo_report,
+            "agent_reports": [{"agent": "aeo_agent", "model": "heuristic", "output": aeo_report, "duration_ms": duration_ms}],
+        }
+
+    logger.info("aeo_agent.start", model=_MODEL)
+
+    page_note = ruleset_prompt_block(page_type) + "\n\n"
 
     user_message = f"""{page_note}Analyze this page for AI answer engine visibility (AEO/GEO):
 

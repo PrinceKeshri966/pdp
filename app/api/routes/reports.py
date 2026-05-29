@@ -113,28 +113,9 @@ async def get_analysis_report(
     report = result.scalar_one_or_none()
     if report is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
-    jsd = report.json_structured_data or {}
-    return AnalyzePDPResponse(
-        report_id=report.id,
-        status=report.status,
-        overall_health_score=report.overall_health_score,
-        seo_score=report.seo_score,
-        source_url=report.source_url,
-        json_structured_data=jsd,
-        dom_technical_seo=jsd.get("_dom_technical_seo") or {},
-        seo_report=report.seo_report or {},
-        aeo_report=report.aeo_report or {},
-        ux_report=report.ux_report or {},
-        competitor_report=report.competitor_report or {},
-        psychology_report=report.psychology_report or {},
-        final_diagnosis=report.final_diagnosis or {},
-        autofix_report=report.autofix_report or {},
-        generated_content=report.generated_content or {},
-        audit_reliability=jsd.get("_audit_reliability") or {},
-        run_analytics=jsd.get("_run_analytics") or {},
-        agent_reports=report.agent_logs or [],
-        errors=[report.error_message] if report.error_message else [],
-    )
+    from app.api.routes.analyze import _mode1_response
+
+    return _mode1_response(report, {}, report.source_url or "")
 
 
 @router.get(

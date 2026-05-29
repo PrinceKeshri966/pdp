@@ -12,6 +12,7 @@ MODE1_PIPELINE: list[tuple[str, str]] = [
     ("context_router", "Context Router: Mapping strategic pages..."),
     ("visual_ux", "Visual UX: Capturing layout signals..."),
     ("extractor", "Extractor Agent: Parsing product data..."),
+    ("agent_router", "Agent Router: Calibrating audit depth..."),
     ("seo", "SEO Agent: Auditing search signals..."),
     ("aeo", "AEO Agent: Checking AI visibility..."),
     ("ux", "UX Agent: Evaluating conversion..."),

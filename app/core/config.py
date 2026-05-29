@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     secret_key: str = "changeme"
     debug: bool = True
+    demo_mode: bool = False  # DEMO_MODE=true — faster CTO demos (see app/core/demo_mode.py)
 
     # ── Database ─────────────────────────────────────────────────────────────
     database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/commerce_os"

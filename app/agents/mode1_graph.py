@@ -33,6 +33,7 @@ from app.agents.autofix_agent import autofix_agent
 from app.agents.content_gen_agent import content_gen_agent
 from app.agents.pipeline_stream import MODE1_PIPELINE, stream_graph_progress
 from app.analytics.agent_metrics import build_run_analytics
+from app.core.agent_router import agent_router_agent
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -42,18 +43,36 @@ def _should_continue(state: AgentState) -> str:
     return "continue" if state.get("status") != "failed" else "abort"
 
 
-def _route_extractor(state: AgentState) -> list[str] | str:
+def _route_extractor(state: AgentState) -> str:
+    if state.get("status") == "failed":
+        return "abort"
+    return "continue"
+
+
+def _route_parallel_analysis(state: AgentState) -> list[str] | str:
     if state.get("status") == "failed":
         return END
     return ["seo", "aeo", "ux", "competitor", "psychology"]
 
 
 async def generation_join(state: AgentState) -> AgentState:
-    """Finalize pipeline; attach run analytics."""
-    analytics = build_run_analytics(state.get("agent_reports") or [], dict(state))
+    """Finalize pipeline; validate outputs for frontend trust, then attach analytics."""
+    from app.validators.sanitize_pipeline import sanitize_mode1_for_frontend
+
+    merged = dict(state)
+    merged, _fv = sanitize_mode1_for_frontend(merged)
+    analytics = build_run_analytics(merged.get("agent_reports") or [], merged)
     return {
         "status": "completed",
         "run_analytics": analytics,
+        "frontend_validation": merged.get("frontend_validation"),
+        "audit_reliability": merged.get("audit_reliability"),
+        "autofix_report": merged.get("autofix_report"),
+        "final_diagnosis": merged.get("final_diagnosis"),
+        "seo_report": merged.get("seo_report"),
+        "aeo_report": merged.get("aeo_report"),
+        "ux_report": merged.get("ux_report"),
+        "json_structured_data": merged.get("json_structured_data"),
     }
 
 
@@ -65,6 +84,7 @@ def build_mode1_graph() -> StateGraph:
     graph.add_node("context_router", context_router_agent)
     graph.add_node("visual_ux", visual_ux_agent)
     graph.add_node("extractor", extractor_agent)
+    graph.add_node("agent_router", agent_router_agent)
 
     graph.add_node("seo", seo_agent)
     graph.add_node("aeo", aeo_agent)
@@ -86,7 +106,12 @@ def build_mode1_graph() -> StateGraph:
     graph.add_conditional_edges("context_router", _should_continue, {"continue": "visual_ux", "abort": END})
     graph.add_conditional_edges("visual_ux", _should_continue, {"continue": "extractor", "abort": END})
 
-    graph.add_conditional_edges("extractor", _route_extractor)
+    graph.add_conditional_edges(
+        "extractor",
+        _route_extractor,
+        {"continue": "agent_router", "abort": END},
+    )
+    graph.add_conditional_edges("agent_router", _route_parallel_analysis)
 
     graph.add_edge("seo", "validator")
     graph.add_edge("aeo", "validator")
@@ -129,6 +154,9 @@ def build_mode1_initial_state(
         "dom_technical_seo": None,
         "scrape_html": None,
         "scrape_validation": None,
+        "page_type_info": None,
+        "agent_plan": None,
+        "audit_depth": "standard",
         "scrape_retry_count": 0,
         "scrape_retry_methods": [],
         "partial_analysis": False,

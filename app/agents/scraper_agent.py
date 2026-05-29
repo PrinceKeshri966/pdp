@@ -16,6 +16,8 @@ import httpx
 
 from app.agents.state import AgentState
 from app.core.config import get_settings
+from app.core.extraction.domain_memory import should_force_playwright_first
+from app.core.extraction.playwright_pdp import fetch_pdp_with_playwright, url_looks_like_pdp
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -30,11 +32,9 @@ _MAX_SCRAPE_HTML_CHARS = 120_000
 _HTTP_TIMEOUT = 45.0
 _JINA_TIMEOUT = 60.0
 
-_BROWSER_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0.0.0 Safari/537.36"
-)
+from app.core.html_metadata import BROWSER_UA, extract_dom_metadata, html_to_text
+
+_BROWSER_UA = BROWSER_UA
 
 
 def _playwright_enabled() -> bool:
@@ -43,80 +43,11 @@ def _playwright_enabled() -> bool:
 
 
 def _extract_dom_metadata(html: str) -> dict[str, str | bool | None]:
-    """Parse raw structural HTML natively to secure absolute source code facts."""
-    title_tag = None
-    meta_desc = None
-    canonical_present = False
-    product_schema_present = False
-    faq_schema_present = False
-    og_present = False
-
-    title_match = re.search(r"<title[^>]*>([\s\S]*?)</title>", html, re.I)
-    if title_match:
-        title_tag = unescape(re.sub(r"\s+", " ", title_match.group(1))).strip()
-    if not title_tag:
-        og_title = re.search(
-            r'<meta[^>]*property=["\']og:title["\'][^>]*content=["\']([^"\']+)["\']',
-            html,
-            re.I,
-        )
-        if not og_title:
-            og_title = re.search(
-                r'<meta[^>]*content=["\']([^"\']+)["\'][^>]*property=["\']og:title["\']',
-                html,
-                re.I,
-            )
-        if og_title:
-            title_tag = unescape(og_title.group(1)).strip()
-
-    # Extract Meta Description via robust regex matching groups
-    desc_match = re.search(r'<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']+)["\']', html, re.I)
-    if not desc_match:
-        desc_match = re.search(r'<meta[^>]*content=["\']([^"\']+)["\'][^>]*name=["\']description["\']', html, re.I)
-    if desc_match:
-        meta_desc = unescape(desc_match.group(1)).strip()
-
-    # Determine critical tags
-    if re.search(r'<link[^>]*rel=["\']canonical["\']', html, re.I):
-        canonical_present = True
-    if re.search(r'<meta[^>]*property=["\']og:title["\']', html, re.I) or re.search(r'<meta[^>]*name=["\']og:title["\']', html, re.I):
-        og_present = True
-
-    # Scan Structured JSON-LD blocks (split closing tag so this .py file is safe inside HTML <script> blocks)
-    _ld_close = "<" + "/script>"
-    for script in re.finditer(
-        r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>([\s\S]*?)' + _ld_close,
-        html,
-        re.I,
-    ):
-        try:
-            content = script.group(1).lower()
-            if '"@type"\s*:\s*["\']product["\']' in content or "'@type'\s*:\s*['\"]product['\"]" in content:
-                product_schema_present = True
-            if '"@type"\s*:\s*["\']faqpage["\']' in content or "'@type'\s*:\s*['\"]faqpage['\"]" in content:
-                faq_schema_present = True
-        except Exception:
-            continue
-
-    return {
-        "title_tag": title_tag,
-        "meta_description": meta_desc,
-        "canonical_present": canonical_present,
-        "product_schema_present": product_schema_present,
-        "faq_schema_present": faq_schema_present,
-        "open_graph_present": og_present,
-    }
+    return extract_dom_metadata(html)
 
 
 def _html_to_text(html: str) -> str:
-    """Strip markup wrappers while preserving layout content streams."""
-    html = re.sub(r"<script[^>]*>[\s\S]*?</script>", " ", html, flags=re.I)
-    html = re.sub(r"<style[^>]*>[\s\S]*?</style>", " ", html, flags=re.I)
-    html = re.sub(r"<noscript[^>]*>[\s\S]*?</noscript>", " ", html, flags=re.I)
-    text = re.sub(r"<[^>]+>", " ", html)
-    text = unescape(text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:_MAX_CONTENT_CHARS]
+    return html_to_text(html)
 
 
 async def _fetch_with_firecrawl(
@@ -259,9 +190,33 @@ async def scraper_agent(state: AgentState) -> AgentState:
     method = "none"
     detected_dom_meta = None
     scrape_html = ""
+    network_payloads: list = []
+    platform_info: dict | None = None
 
-    # 1 — Firecrawl Engine Execution
-    if _settings.firecrawl_api_key:
+    pdp_playwright_first = _playwright_enabled() and (
+        url_looks_like_pdp(url) or should_force_playwright_first(url)
+    )
+    playwright_pdp_locked = False
+
+    # 0 — PDP: Playwright-first (hydration + XHR capture)
+    if pdp_playwright_first:
+        try:
+            pdp = await fetch_pdp_with_playwright(url)
+            text = (pdp.get("markdown_content") or "").strip()
+            if text and len(text) >= _MIN_USABLE_CHARS:
+                content = text
+                detected_dom_meta = pdp.get("dom_technical_seo")
+                scrape_html = pdp.get("scrape_html") or ""
+                network_payloads = pdp.get("network_payloads") or []
+                platform_info = pdp.get("platform_info")
+                method = pdp.get("scraper_method") or "playwright_pdp"
+                playwright_pdp_locked = bool(network_payloads) or len(text) >= _JINA_THIN_THRESHOLD
+                logger.info("scraper_agent.pdp_playwright_first", chars=len(content), locked=playwright_pdp_locked)
+        except Exception as exc:
+            attempt_errors.append(f"playwright_pdp: {exc}")
+
+    # 1 — Firecrawl Engine Execution (skip if Playwright PDP captured network payloads)
+    if _settings.firecrawl_api_key and not playwright_pdp_locked:
         text, dom, html_snip, err = await _try_fetch("firecrawl", _fetch_with_firecrawl, url)
         if err:
             attempt_errors.append(err)
@@ -269,7 +224,7 @@ async def scraper_agent(state: AgentState) -> AgentState:
             content, detected_dom_meta, scrape_html, method = text, dom, html_snip, "firecrawl"
 
     # 2 — Jina Parsing Pipeline Engine
-    if len(content) < _JINA_THIN_THRESHOLD:
+    if len(content) < _JINA_THIN_THRESHOLD and not playwright_pdp_locked:
         text, dom, html_snip, err = await _try_fetch("jina", _fetch_with_jina, url)
         if err:
             attempt_errors.append(err)
@@ -277,15 +232,15 @@ async def scraper_agent(state: AgentState) -> AgentState:
             content, detected_dom_meta, scrape_html, method = text, dom, html_snip or scrape_html, "jina"
 
     # 3 — Fallback HTTPX Execution
-    if len(content) < _JINA_THIN_THRESHOLD:
+    if len(content) < _JINA_THIN_THRESHOLD and not playwright_pdp_locked:
         text, dom, html_snip, err = await _try_fetch("httpx", _fetch_with_httpx, url)
         if err:
             attempt_errors.append(err)
         if text and len(text) > len(content):
             content, detected_dom_meta, scrape_html, method = text, dom, html_snip or scrape_html, "httpx"
 
-    # 4 — Local Environment Playwright Context Router
-    if _playwright_enabled() and len(content) < _JINA_THIN_THRESHOLD:
+    # 4 — Playwright fallback (non-PDP or PDP first pass failed)
+    if _playwright_enabled() and len(content) < _JINA_THIN_THRESHOLD and method != "playwright_pdp":
         text, dom, html_snip, err = await _try_fetch("playwright", _fetch_with_playwright, url)
         if err:
             attempt_errors.append(err)
@@ -317,7 +272,11 @@ async def scraper_agent(state: AgentState) -> AgentState:
     state["scraper_method"] = method
     state["dom_technical_seo"] = detected_dom_meta
     state["scrape_html"] = scrape_html
-    
+    if network_payloads:
+        state["network_payloads"] = network_payloads
+    if platform_info:
+        state["platform_info"] = platform_info
+
     state["agent_reports"] = state.get("agent_reports", []) + [
         {
             "agent": "scraper_agent",

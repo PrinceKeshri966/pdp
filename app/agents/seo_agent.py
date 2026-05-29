@@ -10,7 +10,7 @@ import time
 from typing import Any
 
 from app.agents.claude_client import claude
-from app.agents.competitor_discovery import resolve_homepage_mode
+from app.rulesets.base import ruleset_prompt_block
 from app.agents.context_router import format_context_for_llm
 from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
@@ -133,8 +133,7 @@ async def seo_agent(state: AgentState) -> AgentState:
     )
 
     structured = state_dict(state, "json_structured_data")
-    page_url = state.get("url") or ""
-    homepage_mode = resolve_homepage_mode(page_url, state.get("compare_as"))
+    page_type = state_dict(state, "page_type_info").get("page_type") or state_dict(state, "scrape_validation").get("page_type") or "unknown"
 
     logger.info("seo_agent.start", model=_MODEL, precomputed=True)
     t0 = time.monotonic()
@@ -142,11 +141,8 @@ async def seo_agent(state: AgentState) -> AgentState:
     user_message = (
         "PRECOMPUTED_SEO_FACTS (ground truth — do not contradict):\n"
         f"{json.dumps({k: v for k, v in facts.items() if k != '_deterministic'}, separators=(',', ':'))}\n\n"
-        + (
-            "Page type: HOMEPAGE — missing Product schema is expected; do not flag it as top_issue.\n\n"
-            if homepage_mode
-            else ""
-        )
+        + ruleset_prompt_block(page_type)
+        + "\n\n"
         + f"Product extractor summary:\n{json.dumps(structured, separators=(',', ':'))[:2000]}\n\n"
         + "SEO context package:\n"
         + format_context_for_llm(seo_ctx, max_chars=2500)
@@ -173,6 +169,8 @@ async def seo_agent(state: AgentState) -> AgentState:
         seo_facts=facts,
         scrape_validation=state_dict(state, "scrape_validation"),
         extraction_confidence=state_dict(state, "extraction_confidence"),
+        page_type=page_type,
+        visual_ux_facts=state_dict(state, "visual_ux_facts"),
     )
     llm_overall = seo_report.get("overall_seo_score")
     blended = blend_score(det["deterministic_scores"]["seo"], llm_overall)

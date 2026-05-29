@@ -13,11 +13,26 @@
     <style>
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
-        .fade-in { animation: fadeIn 0.4s ease-in-out forwards; }
+        .fade-in { animation: fadeIn 0.45s ease-out forwards; }
+        .tab-panel-enter { animation: tabPanelIn 0.35s ease-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes tabPanelIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        @keyframes pulseSoft { 0%, 100% { opacity: 1; } 50% { opacity: 0.65; } }
         .radar-spinner { position: relative; width: 80px; height: 80px; border-radius: 50%; border: 3px solid #e2e8f0; }
         .radar-spinner::before { content: ''; position: absolute; top: -3px; left: -3px; right: -3px; bottom: -3px; border-radius: 50%; border: 3px solid transparent; border-top-color: #4f46e5; animation: spin 1s linear infinite; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .premium-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 1rem; box-shadow: 0 4px 6px -1px rgb(15 23 42 / 0.06), 0 2px 4px -2px rgb(15 23 42 / 0.04); transition: box-shadow 0.2s ease, transform 0.2s ease; }
+        .premium-card:hover { box-shadow: 0 12px 24px -8px rgb(79 70 229 / 0.15); }
+        .metric-card-premium { transition: transform 0.2s ease, box-shadow 0.2s ease; }
+        .metric-card-premium:hover { transform: translateY(-2px); box-shadow: 0 8px 20px -6px rgb(15 23 42 / 0.12); }
+        .skeleton-line { height: 0.75rem; border-radius: 0.375rem; background: linear-gradient(90deg, #f1f5f9 0%, #e2e8f0 50%, #f1f5f9 100%); background-size: 200% 100%; animation: shimmer 1.4s ease-in-out infinite; }
+        .confidence-dot-live { animation: pulseSoft 2s ease-in-out infinite; }
+        .gradient-accent { background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #2563eb 100%); }
+        .visual-zone-hero { border: 2px solid rgba(99, 102, 241, 0.7); background: rgba(99, 102, 241, 0.12); }
+        .visual-zone-cta-miss { border: 2px dashed rgba(239, 68, 68, 0.9); background: rgba(239, 68, 68, 0.15); animation: pulseSoft 1.8s ease-in-out infinite; }
+        .visual-zone-trust { border: 2px solid rgba(16, 185, 129, 0.65); background: rgba(16, 185, 129, 0.1); }
+        .sticky-tab-bar { position: sticky; top: 0; z-index: 20; background: rgba(248, 250, 252, 0.92); backdrop-filter: blur(8px); padding-bottom: 0.5rem; margin-bottom: 1rem; border-bottom: 1px solid #e2e8f0; }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-800 font-sans antialiased h-screen flex overflow-hidden">
@@ -73,7 +88,20 @@
             const dom = hasTop ? topDom : (Object.keys(nestedDom).length ? nestedDom : topDom);
             const auditRel = data.audit_reliability || jsd._audit_reliability || {};
             const runAnalytics = data.run_analytics || jsd._run_analytics || {};
-            return { ...data, dom_technical_seo: dom, audit_reliability: auditRel, run_analytics: runAnalytics };
+            const frontendValidation = data.frontend_validation || auditRel.frontend_validation || jsd._frontend_validation || {};
+            return { ...data, dom_technical_seo: dom, audit_reliability: auditRel, run_analytics: runAnalytics, frontend_validation: frontendValidation };
+        }
+
+        /** AutoFix fields that passed before/after validation (no identical no-op fixes). */
+        function getValidatedAutofixFix(autofixRpt, field) {
+            if (!autofixRpt) return null;
+            const vf = autofixRpt._valid_fixes || {};
+            if (vf[field] === false) return null;
+            const map = { fixed_title_tag: 'title_tag', fixed_meta_description: 'meta_description', fixed_h1: 'h1', rewritten_product_description: 'description' };
+            const comp = (autofixRpt.fix_comparisons || []).find(x => x.field === map[field]);
+            if (comp) return comp.valid_fix ? (comp.after || null) : null;
+            if (vf[field] === true) return autofixRpt[field] || null;
+            return null;
         }
 
         function reliabilityTone(level) {
@@ -81,6 +109,84 @@
             if (l === 'high') return { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-800', dot: 'bg-emerald-500' };
             if (l === 'medium') return { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-900', dot: 'bg-amber-500' };
             return { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-900', dot: 'bg-red-500' };
+        }
+
+        /** Downgrade competitor UI when scrapes fail or demo skipped discovery. */
+        function getCompetitorTrust(competitorRpt) {
+            if (!competitorRpt || !Object.keys(competitorRpt).length) {
+                return { weak: true, quality: 'none', reason: 'No competitor data', suppressMatrix: true };
+            }
+            if (competitorRpt.skipped) {
+                return { weak: true, quality: 'skipped', reason: competitorRpt.skip_reason || 'Competitor discovery skipped', suppressMatrix: true };
+            }
+            const ds = String(competitorRpt.data_source || '').toLowerCase();
+            const sites = (competitorRpt.live_compare || {}).sites || [];
+            const competitors = sites.filter(s => s.role === 'competitor');
+            const scraped = competitors.filter(s => s.scrape_ok).length;
+            const errors = competitors.filter(s => /ERROR|could not be satisfied|Access Denied/i.test(String((s.features || {}).product_name || '')));
+            if (ds === 'skipped' || ds === 'user_only' || scraped === 0) {
+                return { weak: true, quality: 'weak', reason: `Limited data (${ds || 'no live scrapes'})`, suppressMatrix: scraped === 0 };
+            }
+            if (errors.length) {
+                return { weak: true, quality: 'partial', reason: `${errors.length} competitor page(s) blocked or failed`, suppressMatrix: false };
+            }
+            return { weak: false, quality: 'good', reason: `${scraped} competitor page(s) scraped live`, suppressMatrix: false };
+        }
+
+        /** Premium visual audit panel — CSS zones on live preview (no raw-only screenshots). */
+        function VisualEvidencePanel({ url, visualUx, pageType, title }) {
+            const [useIframe, setUseIframe] = useState(false);
+            const preview = sitePreviewUrl(url);
+            if (!url) return null;
+            const zones = [];
+            if (visualUx?.hero_section_detected) {
+                zones.push({ top: '5%', height: '30%', label: 'Hero', cls: 'visual-zone-hero' });
+            }
+            if (visualUx?.cta_above_fold === false) {
+                zones.push({ top: '46%', height: '14%', label: 'CTA below fold', cls: 'visual-zone-cta-miss' });
+            } else if (visualUx?.cta_above_fold) {
+                zones.push({ top: '40%', height: '12%', label: 'Primary CTA', cls: 'visual-zone-hero' });
+            }
+            if (visualUx?.trust_badges_visible) {
+                zones.push({ top: '66%', height: '14%', label: 'Trust signals', cls: 'visual-zone-trust' });
+            } else if (visualUx?.capture_ok) {
+                zones.push({ top: '70%', height: '12%', label: 'Trust gap', cls: 'visual-zone-cta-miss' });
+            }
+            const ptLabel = (pageType || 'page').replace(/_/g, ' ');
+            return (
+                <div className="premium-card overflow-hidden">
+                    <div className="px-4 py-3 border-b border-slate-100 bg-gradient-to-r from-indigo-50 to-slate-50 flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                            <p className="text-sm font-bold text-slate-800">{title || 'Visual evidence'}</p>
+                            <p className="text-[10px] text-slate-500">Annotated zones from Playwright + DOM — not a generic screenshot dump.</p>
+                        </div>
+                        <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-1 rounded-full bg-white border border-slate-200 text-slate-600 capitalize">{ptLabel}</span>
+                    </div>
+                    <div className="relative h-56 md:h-64 bg-slate-100 overflow-hidden">
+                        {useIframe || !preview ? (
+                            <iframe title="Visual audit" src={url} className="w-[400%] h-[400%] origin-top-left scale-[0.25] pointer-events-none border-0 bg-white" sandbox="allow-scripts allow-same-origin" />
+                        ) : (
+                            <img src={preview} alt="Visual audit" className="w-full h-full object-cover object-top" loading="lazy" onError={() => setUseIframe(true)} />
+                        )}
+                        {zones.map((z, i) => (
+                            <div key={i} className={`absolute left-3 right-3 rounded-lg pointer-events-none ${z.cls}`} style={{ top: z.top, height: z.height }}>
+                                <span className="absolute -top-5 left-0 text-[10px] font-bold px-2 py-0.5 rounded shadow bg-white text-slate-800 border border-slate-200">{z.label}</span>
+                            </div>
+                        ))}
+                        {!visualUx?.capture_ok && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-slate-900/40">
+                                <span className="text-xs font-bold text-white bg-slate-900/80 px-3 py-1.5 rounded-lg">Text-only audit — enable Playwright for zones</span>
+                            </div>
+                        )}
+                    </div>
+                    <div className="px-3 py-2 flex flex-wrap gap-2 text-[10px] border-t border-slate-100 bg-white">
+                        {visualUx?.cta_above_fold != null && <span className={`px-2 py-0.5 rounded-full border ${visualUx.cta_above_fold ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-red-50 text-red-800 border-red-200'}`}>CTA {visualUx.cta_above_fold ? 'above fold' : 'missing above fold'}</span>}
+                        {visualUx?.sticky_cta_detected && <span className="px-2 py-0.5 rounded-full border bg-indigo-50 text-indigo-800 border-indigo-200">Sticky CTA</span>}
+                        {visualUx?.trust_badges_visible != null && <span className={`px-2 py-0.5 rounded-full border ${visualUx.trust_badges_visible ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-800'}`}>Trust {visualUx.trust_badges_visible ? 'visible' : 'weak'}</span>}
+                        {visualUx?.mobile_layout_quality && <span className="px-2 py-0.5 rounded-full border bg-slate-50 text-slate-700">Mobile: {visualUx.mobile_layout_quality}</span>}
+                    </div>
+                </div>
+            );
         }
 
         function getAuthErrorMessage(code) {
@@ -558,30 +664,32 @@
             );
         }
 
-        function SitePreviewFrame({ url, name }) {
+        function SitePreviewFrame({ url, name, scrapeOk, highlightYou }) {
             const [useIframe, setUseIframe] = useState(false);
             const preview = sitePreviewUrl(url);
+            const failed = scrapeOk === false;
             if (!url) {
                 return <div className="h-full flex items-center justify-center text-slate-400 text-xs">No URL</div>;
             }
-            if (useIframe || !preview) {
-                return (
-                    <iframe
-                        title={name || 'Site preview'}
-                        src={url}
-                        className="w-[400%] h-[400%] origin-top-left scale-[0.25] pointer-events-none border-0 bg-white"
-                        sandbox="allow-scripts allow-same-origin"
-                    />
-                );
-            }
+            const inner = (useIframe || !preview) ? (
+                <iframe title={name || 'Site preview'} src={url} className="w-[400%] h-[400%] origin-top-left scale-[0.25] pointer-events-none border-0 bg-white" sandbox="allow-scripts allow-same-origin" />
+            ) : (
+                <img src={preview} alt={name || 'Site preview'} className="w-full h-full object-cover object-top bg-slate-100" loading="lazy" onError={() => setUseIframe(true)} />
+            );
             return (
-                <img
-                    src={preview}
-                    alt={name || 'Site preview'}
-                    className="w-full h-full object-cover object-top bg-slate-100"
-                    loading="lazy"
-                    onError={() => setUseIframe(true)}
-                />
+                <div className="relative w-full h-full">
+                    {inner}
+                    {highlightYou && (
+                        <div className="absolute inset-2 border-2 border-indigo-500 rounded-lg pointer-events-none">
+                            <span className="absolute top-1 left-1 text-[9px] font-bold bg-indigo-600 text-white px-1.5 py-0.5 rounded">Your page</span>
+                        </div>
+                    )}
+                    {failed && (
+                        <div className="absolute inset-0 bg-red-950/50 flex items-center justify-center p-2">
+                            <span className="text-[10px] font-bold text-white text-center bg-red-700 px-2 py-1 rounded">Scrape failed — metrics unreliable</span>
+                        </div>
+                    )}
+                </div>
             );
         }
 
@@ -809,7 +917,7 @@
             //        VISUALIZER_MODE2 | SUCCESS
             const [view, setView] = useState('HOME');
             const [analyzingText, setAnalyzingText] = useState('');
-            const [analyzingProgress, setAnalyzingProgress] = useState({ completed: 0, total: 10 });
+            const [analyzingProgress, setAnalyzingProgress] = useState({ completed: 0, total: 15 });
 
             // Mode 1 state
             const [urlInput, setUrlInput] = useState('');
@@ -959,7 +1067,7 @@
             const runMode1Analysis = async () => {
                 if (!urlInput.trim()) return;
                 setView('ANALYZING');
-                setAnalyzingProgress({ completed: 0, total: 10 });
+                setAnalyzingProgress({ completed: 0, total: 15 });
                 setAnalyzingText('Scraper Agent: Fetching page...');
                 try {
                     const result = await apiStreamAnalyze(
@@ -968,7 +1076,7 @@
                         (evt) => {
                             if (evt.label) setAnalyzingText(evt.label);
                             if (evt.completed_count != null) {
-                                setAnalyzingProgress({ completed: evt.completed_count, total: evt.total_count || 10 });
+                                setAnalyzingProgress({ completed: evt.completed_count, total: evt.total_count || 14 });
                             }
                         }
                     );
@@ -1875,6 +1983,12 @@
                                 const diagnosisRpt  = mode1Result?.final_diagnosis   || {};
                                 const autofixRpt    = mode1Result?.autofix_report    || {};
                                 const contentRpt    = mode1Result?.generated_content || {};
+                                const reliability   = mode1Result?.audit_reliability || diagnosisRpt.audit_reliability || {};
+                                const frontendVal   = mode1Result?.frontend_validation || reliability.frontend_validation || {};
+                                const visualUx      = reliability.visual_ux_facts || {};
+                                const fixTitle = getValidatedAutofixFix(autofixRpt, 'fixed_title_tag');
+                                const fixMeta = getValidatedAutofixFix(autofixRpt, 'fixed_meta_description');
+                                const fixH1 = getValidatedAutofixFix(autofixRpt, 'fixed_h1');
 
                                 const seoScore    = seoRpt.overall_seo_score    != null ? (seoRpt.overall_seo_score * 10).toFixed(0)    : '--';
                                 const aiVisScore  = aeoRpt.ai_visibility_score  != null ? (aeoRpt.ai_visibility_score * 10).toFixed(0)  : '--';
@@ -1972,6 +2086,16 @@
 
                                 const CompareFixRow = ({ label, current, fixed }) => {
                                     if (!current && !fixed) return null;
+                                    const same = current && fixed && String(current).trim().toLowerCase() === String(fixed).trim().toLowerCase();
+                                    if (same) {
+                                        return (
+                                            <div className="mb-5 last:mb-0 rounded-lg border border-amber-200 bg-amber-50 p-4">
+                                                <p className="text-xs font-bold text-amber-800 uppercase tracking-wide mb-1">{label}</p>
+                                                <p className="text-sm text-amber-900"><i className="ph ph-warning mr-1"></i>No meaningful change detected — fix suppressed to avoid misleading before/after display.</p>
+                                                <p className="text-xs text-slate-600 mt-2 truncate">Current: {current}</p>
+                                            </div>
+                                        );
+                                    }
                                     return (
                                         <div className="mb-5 last:mb-0">
                                             <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">{label}</p>
@@ -1983,9 +2107,9 @@
                                                 </div>
                                                 <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-4 relative">
                                                     <p className="text-xs font-bold text-emerald-600 mb-2 flex items-center gap-1"><i className="ph ph-check-circle"></i> Fixed (copy & use)</p>
-                                                    <p className="text-sm text-slate-800 leading-relaxed pr-8">{fixed || '—'}</p>
-                                                    {fixed && <p className="text-xs text-slate-400 mt-2">{fixed.length} characters</p>}
-                                                    {fixed && <div className="absolute top-3 right-3"><CopyBtn text={fixed} /></div>}
+                                                    <p className="text-sm text-slate-800 leading-relaxed pr-8">{fixed}</p>
+                                                    <p className="text-xs text-slate-400 mt-2">{fixed.length} characters</p>
+                                                    <div className="absolute top-3 right-3"><CopyBtn text={fixed} /></div>
                                                 </div>
                                             </div>
                                         </div>
@@ -2124,9 +2248,9 @@
                                 );
 
                                 const SectionCard = ({ title, icon, children, rightElement }) => (
-                                    <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-                                        <div className="border-b border-gray-100 px-5 py-4 bg-gray-50/50 flex justify-between items-center">
-                                            <div className="flex items-center gap-2 text-gray-800 font-semibold">
+                                    <div className="premium-card overflow-hidden">
+                                        <div className="border-b border-slate-100 px-5 py-4 bg-gradient-to-r from-slate-50 to-white flex justify-between items-center sticky top-0 z-10">
+                                            <div className="flex items-center gap-2 text-slate-800 font-semibold">
                                                 {icon && <i className={`ph ${icon} text-indigo-600 text-lg`}></i>}
                                                 {title}
                                             </div>
@@ -2135,6 +2259,11 @@
                                         <div className="p-5">{children}</div>
                                     </div>
                                 );
+
+                                const compTrust = getCompetitorTrust(competitorRpt);
+                                const auditPageType = reliability.page_type || reliability.detected_page_type || competitorRpt.live_compare?.compare_page_type || '';
+                                const isNonPdpPage = ['homepage', 'saas_landing', 'blog', 'landing'].includes(String(auditPageType).toLowerCase());
+                                const sourceUrl = mode1Result?.source_url || '';
 
                                 return (
                                     <div className="fade-in">
@@ -2155,46 +2284,173 @@
                                             </div>
                                         </div>
 
+                                        {(reliability.report_reliability || reliability.scrape_quality) && (() => {
+                                            const relTone = reliabilityTone(reliability.report_reliability);
+                                            const scrapeTone = reliabilityTone(reliability.scrape_quality);
+                                            const extPct = reliability.extraction_confidence_pct ?? Math.round((reliability.extraction_confidence || 0) * 100);
+                                            return (
+                                                <div className={`mb-6 rounded-xl border p-4 ${relTone.bg} ${relTone.border}`}>
+                                                    <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                                                        <div>
+                                                            <p className={`text-sm font-bold ${relTone.text} flex items-center gap-2`}>
+                                                                <span className={`w-2.5 h-2.5 rounded-full confidence-dot-live ${relTone.dot}`}></span>
+                                                                Audit reliability: {reliability.report_reliability || 'medium'}
+                                                                {reliability.partial_analysis && (
+                                                                    <span className="text-xs font-semibold bg-red-100 text-red-800 px-2 py-0.5 rounded-full ml-1">Partial analysis</span>
+                                                                )}
+                                                            </p>
+                                                            <p className="text-xs text-slate-600 mt-1">Scores are capped when scrape or extraction confidence is low — we avoid overconfident AI claims.</p>
+                                                        </div>
+                                                        {reliability.hallucination_risk && (
+                                                            <span className="text-xs font-bold px-2 py-1 rounded-lg bg-white/80 border border-slate-200">
+                                                                Hallucination risk: {reliability.hallucination_risk}
+                                                            </span>
+                                                        )}
+                                                        {reliability.demo_mode && (
+                                                            <span className="text-xs font-bold px-2 py-1 rounded-lg bg-indigo-100 text-indigo-800 border border-indigo-200">
+                                                                Demo Ready
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 text-sm">
+                                                        <div className={`rounded-lg border p-3 bg-white/70 ${scrapeTone.border}`}>
+                                                            <p className="text-[10px] font-bold uppercase text-slate-500">Scrape quality</p>
+                                                            <p className={`font-black capitalize ${scrapeTone.text}`}>{reliability.scrape_quality || '—'}</p>
+                                                        </div>
+                                                        <div className="rounded-lg border border-slate-200 p-3 bg-white/70">
+                                                            <p className="text-[10px] font-bold uppercase text-slate-500">Extraction confidence</p>
+                                                            <p className="font-black text-slate-900">{extPct}%</p>
+                                                            {(reliability.field_confidence || mode1Result?.extraction_confidence) && (
+                                                                <p className="text-[9px] text-slate-500 mt-1">
+                                                                    Price {(reliability.field_confidence?.price ?? mode1Result?.extraction_confidence?.price_confidence) != null ? Math.round((reliability.field_confidence?.price ?? mode1Result?.extraction_confidence?.price_confidence) * 100) + '%' : '—'}
+                                                                    {' · '}Name {(reliability.field_confidence?.product_name ?? mode1Result?.extraction_confidence?.product_name_confidence) != null ? Math.round((reliability.field_confidence?.product_name ?? mode1Result?.extraction_confidence?.product_name_confidence) * 100) + '%' : '—'}
+                                                                </p>
+                                                            )}
+                                                        </div>
+                                                        {reliability.platform && (
+                                                        <div className="rounded-lg border border-slate-200 p-3 bg-white/70">
+                                                            <p className="text-[10px] font-bold uppercase text-slate-500">Platform</p>
+                                                            <p className="font-black capitalize text-slate-900">{reliability.platform}</p>
+                                                        </div>
+                                                        )}
+                                                        <div className="rounded-lg border border-slate-200 p-3 bg-white/70">
+                                                            <p className="text-[10px] font-bold uppercase text-slate-500">Page type</p>
+                                                            <p className="font-black capitalize text-slate-900">
+                                                                {reliability.page_type || reliability.detected_page_type || '—'}
+                                                                {reliability.page_type_confidence != null && (
+                                                                    <span className="text-[10px] font-semibold text-slate-500 block">
+                                                                        {Math.round(reliability.page_type_confidence * 100)}% confidence
+                                                                    </span>
+                                                                )}
+                                                            </p>
+                                                        </div>
+                                                        <div className="rounded-lg border border-slate-200 p-3 bg-white/70">
+                                                            <p className="text-[10px] font-bold uppercase text-slate-500">Audit depth</p>
+                                                            <p className="font-black capitalize text-slate-900">{reliability.audit_depth || diagnosisRpt.audit_depth || 'standard'}</p>
+                                                        </div>
+                                                        <div className="rounded-lg border border-slate-200 p-3 bg-white/70">
+                                                            <p className="text-[10px] font-bold uppercase text-slate-500">Visual verified</p>
+                                                            <p className={`font-black ${reliability.visual_verified ? 'text-emerald-700' : 'text-amber-800'}`}>
+                                                                {reliability.visual_verified ? 'Yes' : 'Text-only'}
+                                                            </p>
+                                                        </div>
+                                                        <div className="rounded-lg border border-slate-200 p-3 bg-white/70">
+                                                            <p className="text-[10px] font-bold uppercase text-slate-500">JS-heavy</p>
+                                                            <p className="font-black text-slate-900">{reliability.is_js_heavy ? 'Yes' : 'No'}</p>
+                                                        </div>
+                                                    </div>
+                                                    {!reliability.visual_verified && (
+                                                        <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2 mt-2">
+                                                            Visual verification unavailable. Some UX findings are text-inferred only.
+                                                        </p>
+                                                    )}
+                                                    {(reliability.scrape_retry_methods || []).length > 0 && (
+                                                        <p className="text-xs text-slate-600 mt-2">
+                                                            <i className="ph ph-arrows-clockwise"></i> Retried scrape via: {reliability.scrape_retry_methods.join(', ')}
+                                                        </p>
+                                                    )}
+                                                    {visualUx.capture_ok && (
+                                                        <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                                                            {visualUx.cta_above_fold && <span className="bg-white border rounded-full px-2 py-1">CTA above fold</span>}
+                                                            {visualUx.sticky_cta_detected && <span className="bg-white border rounded-full px-2 py-1">Sticky CTA</span>}
+                                                            {visualUx.trust_badges_visible && <span className="bg-white border rounded-full px-2 py-1">Trust badges visible</span>}
+                                                            {visualUx.mobile_layout_quality && <span className="bg-white border rounded-full px-2 py-1">Mobile: {visualUx.mobile_layout_quality}</span>}
+                                                        </div>
+                                                    )}
+                                                    {(reliability.warnings || []).length > 0 && (
+                                                        <ul className="mt-3 space-y-1 text-xs text-slate-700 list-disc list-inside">
+                                                            {(reliability.warnings || []).slice(0, 6).map((w, i) => <li key={i}>{w}</li>)}
+                                                        </ul>
+                                                    )}
+                                                    {(reliability.contradictions || []).length > 0 && (
+                                                        <div className="mt-2 text-xs text-amber-900 bg-amber-100/60 border border-amber-200 rounded-lg p-2">
+                                                            <strong>Contradictions{reliability.contradiction_severity ? ` (${reliability.contradiction_severity})` : ''}:</strong> {(reliability.contradictions || []).join(' · ')}
+                                                        </div>
+                                                    )}
+                                                    {(reliability.hallucination_flags || []).length > 0 && (
+                                                        <div className="mt-2 text-xs text-red-900 bg-red-50 border border-red-200 rounded-lg p-2">
+                                                            <strong>Hallucination flags:</strong> {(reliability.hallucination_flags || []).join(' · ')}
+                                                        </div>
+                                                    )}
+                                                    {(frontendVal.warnings || []).length > 0 && (
+                                                        <div className="mt-2 text-xs text-slate-800 bg-white/80 border border-slate-200 rounded-lg p-2">
+                                                            <strong>Frontend validation:</strong> {(frontendVal.warnings || []).slice(0, 4).join(' · ')}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })()}
+
+                                        {sourceUrl && (visualUx.capture_ok || visualUx.cta_above_fold != null) && (
+                                            <div className="mb-6">
+                                                <VisualEvidencePanel url={sourceUrl} visualUx={visualUx} pageType={auditPageType} title="Overview — visual audit" />
+                                            </div>
+                                        )}
+
                                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
-                                            <div className="bg-white p-3 border border-slate-200 rounded-xl border-t-4 border-t-yellow-400">
+                                            <div className="metric-card-premium bg-white p-3 border border-slate-200 rounded-xl border-t-4 border-t-yellow-400 shadow-sm">
                                                 <p className="text-[10px] font-bold text-slate-400 uppercase">Google Ranking</p>
                                                 <p className="text-xl font-black">{seoScore}</p>
                                             </div>
-                                            <div className="bg-white p-3 border border-slate-200 rounded-xl border-t-4 border-t-purple-400">
+                                            <div className="metric-card-premium bg-white p-3 border border-slate-200 rounded-xl border-t-4 border-t-purple-400 shadow-sm">
                                                 <p className="text-[10px] font-bold text-slate-400 uppercase">AI Visibility</p>
                                                 <p className="text-xl font-black">{aiVisScore}</p>
                                             </div>
-                                            <div className="bg-white p-3 border border-slate-200 rounded-xl border-t-4 border-t-blue-400">
+                                            <div className="metric-card-premium bg-white p-3 border border-slate-200 rounded-xl border-t-4 border-t-blue-400 shadow-sm">
                                                 <p className="text-[10px] font-bold text-slate-400 uppercase">Conversion</p>
                                                 <p className="text-xl font-black">{uxScore}</p>
                                             </div>
-                                            <div className="bg-white p-3 border border-slate-200 rounded-xl border-t-4 border-t-orange-400">
+                                            <div className="metric-card-premium bg-white p-3 border border-slate-200 rounded-xl border-t-4 border-t-orange-400 shadow-sm">
                                                 <p className="text-[10px] font-bold text-slate-400 uppercase">Buyer Psychology</p>
                                                 <p className="text-xl font-black">{psychScore}</p>
                                             </div>
-                                            <div className="bg-white p-3 border border-slate-200 rounded-xl border-t-4 border-t-cyan-400">
+                                            <div className="metric-card-premium bg-white p-3 border border-slate-200 rounded-xl border-t-4 border-t-cyan-400 shadow-sm">
                                                 <p className="text-[10px] font-bold text-slate-400 uppercase">vs Competitors</p>
-                                                <p className="text-xl font-black">{compScore}</p>
+                                                <p className="text-xl font-black flex items-center gap-1">
+                                                    {compScore}
+                                                    {compTrust.weak && <span className="text-[9px] font-bold text-amber-700 bg-amber-100 px-1 rounded" title={compTrust.reason}>!</span>}
+                                                </p>
                                             </div>
-                                            <div className="bg-slate-900 p-3 border border-slate-800 rounded-xl border-t-4 border-t-green-400 text-white">
+                                            <div className="metric-card-premium bg-slate-900 p-3 border border-slate-800 rounded-xl border-t-4 border-t-green-400 text-white shadow-md">
                                                 <p className="text-[10px] font-bold text-slate-300 uppercase">Overall Health</p>
                                                 <p className="text-xl font-black text-green-400">{healthScore}</p>
                                             </div>
                                         </div>
 
-                                        <div className="flex flex-wrap gap-2 mb-6 border-b border-slate-200 pb-3">
+                                        <div className="sticky-tab-bar flex flex-wrap gap-2">
                                             {REPORT_TABS.map(tab => (
-                                                <button key={tab.id} onClick={() => setReportTab(tab.id)} className={`px-3 py-2 rounded-lg text-xs font-bold transition-all ${activeReportTab === tab.id ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                                                <button key={tab.id} onClick={() => setReportTab(tab.id)} className={`px-3 py-2 rounded-lg text-xs font-bold transition-all duration-200 ${activeReportTab === tab.id ? 'gradient-accent text-white shadow-md scale-[1.02]' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:shadow-sm'}`}>
                                                     {tab.label}
                                                 </button>
                                             ))}
                                         </div>
 
-                                        <div className="space-y-6">
+                                        <div className="space-y-6 tab-panel-enter">
                                             {activeReportTab === 'COMPARE' && (() => {
                                                 const lc = competitorRpt.live_compare || {};
                                                 const sites = lc.sites || [];
-                                                const rows = lc.rows || [];
+                                                const PDP_COMPARE_KEYS = new Set(['has_size_guide', 'size_guide', 'fit_description']);
+                                                const rows = (lc.rows || []).filter(r => !isNonPdpPage || !PDP_COMPARE_KEYS.has(r.key));
                                                 const pageType = lc.compare_page_type || 'product';
                                                 const pageTypeLabel = getComparePageTypeLabel(pageType);
                                                 const compareAsUsed = lc.compare_as || 'auto';
@@ -2209,11 +2465,22 @@
                                                 };
                                                 return (
                                                 <div className="space-y-6">
+                                                    {compTrust.weak && (
+                                                        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 flex gap-3">
+                                                            <i className="ph ph-warning text-amber-600 text-xl shrink-0"></i>
+                                                            <div className="text-sm text-amber-950">
+                                                                <p className="font-bold">Competitor comparison — limited confidence</p>
+                                                                <p className="mt-1">{compTrust.reason}. Side-by-side metrics may be incomplete; we do not show fake precision.</p>
+                                                            </div>
+                                                        </div>
+                                                    )}
                                                     <div className="bg-cyan-50 border border-cyan-100 rounded-xl p-4 flex gap-3">
                                                         <i className="ph ph-columns text-cyan-600 text-xl shrink-0"></i>
                                                         <div className="text-sm text-cyan-900">
                                                             <p className="font-semibold mb-1">Real side-by-side compare</p>
-                                                            <p>Your site vs top competitors — scraped live. Source: <strong>{competitorRpt.data_source || 'live_scrape'}</strong></p>
+                                                            <p>Your site vs top competitors — scraped live. Source: <strong>{competitorRpt.data_source || 'live_scrape'}</strong>
+                                                                {compTrust.weak && <span className="ml-1 text-amber-800 font-semibold">(partial)</span>}
+                                                            </p>
                                                             <p className="text-xs mt-1 text-cyan-800">
                                                                 Compare mode: <strong>{compareAsLabel}</strong> · Matching <strong>{pageTypeLabel}</strong> across all sites.
                                                             </p>
@@ -2234,7 +2501,7 @@
                                                                     </div>
                                                                 </div>
                                                                 <div className="h-44 bg-slate-50 relative overflow-hidden">
-                                                                    <SitePreviewFrame url={site.url} name={site.name} />
+                                                                    <SitePreviewFrame url={site.url} name={site.name} scrapeOk={site.scrape_ok} highlightYou={i === 0} />
                                                                 </div>
                                                                 <div className="p-3 text-xs space-y-1 border-t">
                                                                     <p className="font-semibold text-slate-800 truncate">{site.features?.product_name || site.name}</p>
@@ -2342,7 +2609,14 @@
                                                             <SectionCard title="Google Search Preview" icon="ph-google-logo" rightElement={<span className="text-xs text-slate-400">How shoppers see you in search</span>}>
                                                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                                     <SerpPreview label="Current — on your site now" variant="current" title={seoRpt.title_tag?.value} url={analyzedUrl} description={seoRpt.meta_description?.value} />
-                                                                    <SerpPreview label="After AutoFix — recommended" variant="fixed" title={autofixRpt.fixed_title_tag || seoRpt.title_tag?.value} url={analyzedUrl} description={autofixRpt.fixed_meta_description || seoRpt.meta_description?.value} />
+                                                                    {fixTitle || fixMeta ? (
+                                                                        <SerpPreview label="After AutoFix — recommended" variant="fixed" title={fixTitle || seoRpt.title_tag?.value} url={analyzedUrl} description={fixMeta || seoRpt.meta_description?.value} />
+                                                                    ) : (
+                                                                        <div className="border border-amber-200 bg-amber-50 rounded-xl p-4 text-sm text-amber-900">
+                                                                            <p className="font-bold mb-1">No verified AutoFix change for SERP preview</p>
+                                                                            <p className="text-xs">Title/meta fix was identical to current or unsupported — not shown to avoid fake improvements.</p>
+                                                                        </div>
+                                                                    )}
                                                                 </div>
                                                             </SectionCard>
                                                         </div>
@@ -2546,8 +2820,13 @@
                                                         <div className="text-sm text-indigo-900">
                                                             <p className="font-semibold mb-1">Why are visitors leaving without buying?</p>
                                                             <p className="text-indigo-800/90">Each check shows a specific reason shoppers leave without buying — unclear buttons, missing trust signals, weak photos, or a hard checkout. Click any item to see what it means and how to fix it.</p>
+                                                            {isNonPdpPage && <p className="text-xs text-indigo-700/80 mt-2 border-t border-indigo-200/60 pt-2">Homepage / SaaS mode: PDP-only checks (size guide, fit) are hidden.</p>}
                                                         </div>
                                                     </div>
+
+                                                    {sourceUrl && (
+                                                        <VisualEvidencePanel url={sourceUrl} visualUx={visualUx} pageType={auditPageType} title="Conversion & UX — highlighted zones" />
+                                                    )}
 
                                                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                                                         <div className="flex flex-col items-center justify-center p-6 bg-white rounded-xl border border-slate-200 shadow-sm">
@@ -2602,6 +2881,7 @@
                                                                 <CheckBadge val={uxRpt.trust_signals?.money_back_guarantee} checkId="trust_moneyback" />
                                                             </div>
                                                         </SectionCard>
+                                                        {!isNonPdpPage && (
                                                         <SectionCard title="Product Information" rightElement={<span className="text-xs font-bold text-slate-400">{uxRpt.product_information?.score}/10</span>}>
                                                             <div className="space-y-2">
                                                                 <CheckBadge val={uxRpt.product_information?.size_guide_present} checkId="info_size_guide" />
@@ -2610,6 +2890,7 @@
                                                                 <CheckBadge val={uxRpt.product_information?.specifications_table} checkId="info_specs" />
                                                             </div>
                                                         </SectionCard>
+                                                        )}
                                                         <SectionCard title="Urgency & Scarcity" rightElement={<span className="text-xs font-bold text-slate-400">{uxRpt.urgency_scarcity?.score}/10</span>}>
                                                             <div className="space-y-2">
                                                                 <CheckBadge val={uxRpt.urgency_scarcity?.stock_counter} checkId="urgency_stock" />
@@ -2637,6 +2918,12 @@
 
                                             {activeReportTab === 'COMPETITOR' && (
                                                 <div className="space-y-6">
+                                                    {compTrust.weak && (
+                                                        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+                                                            <strong className="flex items-center gap-2"><i className="ph ph-shield-warning"></i> Benchmark confidence: {compTrust.quality}</strong>
+                                                            <p className="mt-1">{compTrust.reason}. Category averages may be suppressed when live competitor HTML is unavailable.</p>
+                                                        </div>
+                                                    )}
                                                     <div className="bg-cyan-50 border border-cyan-100 rounded-xl p-4 flex gap-3">
                                                         <i className="ph ph-chart-line-up text-cyan-600 text-xl shrink-0"></i>
                                                         <div className="text-sm text-cyan-900">
@@ -2837,6 +3124,21 @@
 
                                             {activeReportTab === 'AUTOFIX' && (
                                                 <div className="space-y-8">
+                                                    {(frontendVal.warnings || []).length > 0 && (
+                                                        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-900">
+                                                            {(frontendVal.warnings || []).map((w, i) => <p key={i}>• {w}</p>)}
+                                                        </div>
+                                                    )}
+                                                    {(autofixRpt._suppressed_fixes || []).length > 0 && (
+                                                        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm text-slate-700">
+                                                            <p className="font-bold text-slate-800 mb-2">Suppressed fixes (not shown — no real change)</p>
+                                                            <ul className="list-disc list-inside text-xs space-y-1">
+                                                                {(autofixRpt._suppressed_fixes || []).slice(0, 6).map((s, i) => (
+                                                                    <li key={i}>{s.field}: {s.reason}</li>
+                                                                ))}
+                                                            </ul>
+                                                        </div>
+                                                    )}
                                                     {!tabHasReportData('AUTOFIX', tabCtx) && (
                                                         <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 text-sm text-amber-900">
                                                             <strong>Auto-Fix not generated for this run.</strong> Re-run the audit or check Content Studio for copy-ready outputs.
@@ -2866,15 +3168,19 @@
                                                     )}
 
                                                     <SectionCard title="Before vs After — Copy & Paste" icon="ph-arrows-left-right">
-                                                        <CompareFixRow label="Title Tag" current={seoRpt.title_tag?.value} fixed={autofixRpt.fixed_title_tag} />
-                                                        <CompareFixRow label="Meta Description" current={seoRpt.meta_description?.value} fixed={autofixRpt.fixed_meta_description} />
-                                                        <CompareFixRow label="H1 Headline" current={seoRpt.h1?.value} fixed={autofixRpt.fixed_h1} />
+                                                        <CompareFixRow label="Title Tag" current={seoRpt.title_tag?.value} fixed={fixTitle} />
+                                                        <CompareFixRow label="Meta Description" current={seoRpt.meta_description?.value} fixed={fixMeta} />
+                                                        <CompareFixRow label="H1 Headline" current={seoRpt.h1?.value} fixed={fixH1} />
                                                     </SectionCard>
 
                                                     <SectionCard title="Google Search Preview" icon="ph-google-logo">
                                                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                                                             <SerpPreview label="Before" variant="current" title={seoRpt.title_tag?.value} url={analyzedUrl} description={seoRpt.meta_description?.value} />
-                                                            <SerpPreview label="After AutoFix" variant="fixed" title={autofixRpt.fixed_title_tag} url={analyzedUrl} description={autofixRpt.fixed_meta_description} />
+                                                            {fixTitle || fixMeta ? (
+                                                                <SerpPreview label="After AutoFix" variant="fixed" title={fixTitle} url={analyzedUrl} description={fixMeta} />
+                                                            ) : (
+                                                                <div className="border border-amber-200 bg-amber-50 rounded-xl p-4 text-sm text-amber-900">No verified SERP improvement to display.</div>
+                                                            )}
                                                         </div>
                                                     </SectionCard>
 
@@ -2883,9 +3189,9 @@
                                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                                             <SectionCard title="Meta Tags & Headers">
                                                                 {[
-                                                                    ['Title Tag', autofixRpt.fixed_title_tag],
-                                                                    ['Meta Description', autofixRpt.fixed_meta_description],
-                                                                    ['H1 Headline', autofixRpt.fixed_h1],
+                                                                    ['Title Tag', fixTitle],
+                                                                    ['Meta Description', fixMeta],
+                                                                    ['H1 Headline', fixH1],
                                                                 ].map(([label, val]) => val ? (
                                                                     <div key={label} className="mb-4">
                                                                         <p className="text-xs font-bold text-slate-500 mb-1">{label}</p>

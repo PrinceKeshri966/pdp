@@ -20,6 +20,13 @@ TTL_SCRAPE = 6 * 3600
 TTL_PREPROCESSOR = 12 * 3600
 TTL_CONTENT = 24 * 3600
 TTL_COMPETITORS = 12 * 3600
+TTL_COMPETITORS_HOMEPAGE = 24 * 3600
+
+
+def competitor_cache_ttl(page_type: str = "pdp") -> int:
+    if page_type in ("homepage", "saas_landing", "blog", "local_business"):
+        return TTL_COMPETITORS_HOMEPAGE
+    return TTL_COMPETITORS
 
 
 def _url_hash(url: str) -> str:
