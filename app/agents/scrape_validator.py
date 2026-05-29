@@ -11,6 +11,7 @@ from app.agents.state import AgentState, state_dict
 from app.core.logging import get_logger
 from app.core.demo_mode import is_demo_mode
 from app.core.page_type_router import detect_page_type
+from app.core.scrape_gate import evaluate_scrape_gate
 
 logger = get_logger(__name__)
 
@@ -54,6 +55,8 @@ def validate_scrape(
     scrape_html: str = "",
     dom_technical_seo: dict[str, Any] | None = None,
     url: str = "",
+    scraper_method: str = "",
+    capture_confidence: float = 0.0,
 ) -> dict[str, Any]:
     """Return scrape quality assessment (no LLM)."""
     dom = dom_technical_seo or {}
@@ -144,6 +147,11 @@ def validate_scrape(
         scrape_quality = "low"
         confidence = max(0.2, content_completeness_score * 0.5)
 
+    if scraper_method.startswith("playwright") and scrape_quality != "low":
+        confidence = min(0.98, confidence + 0.1)
+        if capture_confidence > 0:
+            confidence = round(min(0.98, (confidence + capture_confidence) / 2 + 0.05), 2)
+
     usable_for_analysis = (
         not possible_bot_block
         and not login_wall
@@ -169,17 +177,13 @@ def validate_scrape(
 
 
 async def enhanced_scrape_retry(state: AgentState) -> dict[str, Any] | None:
-    """Try Playwright PDP pipeline then Firecrawl when validation failed."""
+    """Browser-first retry, then Firecrawl/Jina fallbacks."""
     from app.agents.scraper_agent import (
-        _backfill_dom_metadata,
         _fetch_with_firecrawl,
-        _fetch_with_playwright,
-        _playwright_enabled,
         _try_fetch,
     )
+    from app.core.browser_capture.capture import browser_capture, browser_capture_enabled
     from app.core.config import get_settings
-    from app.core.extraction.playwright_pdp import fetch_pdp_with_playwright, url_looks_like_pdp
-    from app.core.page_type_router import is_pdp
 
     url = (state.get("url") or "").strip()
     if not url:
@@ -192,29 +196,26 @@ async def enhanced_scrape_retry(state: AgentState) -> dict[str, Any] | None:
     method = state.get("scraper_method") or "retry"
     best_network = state.get("network_payloads") or []
     best_platform = state.get("platform_info")
+    best_browser_capture = state.get("browser_capture")
+    best_visual = state.get("visual_ux_facts")
+    best_capture_confidence = float(state.get("capture_confidence") or 0)
 
-    sv = state_dict(state, "scrape_validation")
-    pt = (state_dict(state, "page_type_info").get("page_type") or sv.get("page_type") or "")
-    use_pdp_pw = _playwright_enabled() and (is_pdp(pt) or url_looks_like_pdp(url) or sv.get("is_js_heavy"))
-
-    if use_pdp_pw:
+    if browser_capture_enabled():
         try:
-            pdp = await fetch_pdp_with_playwright(url)
-            text = (pdp.get("markdown_content") or "").strip()
+            capture = await browser_capture(url)
+            text = (capture.get("markdown_content") or "").strip()
             if text and len(text) > len(best_content):
                 best_content = text
-                best_dom = pdp.get("dom_technical_seo") or best_dom
-                best_html = pdp.get("scrape_html") or best_html
-                best_network = pdp.get("network_payloads") or best_network
-                best_platform = pdp.get("platform_info") or best_platform
-                method = "playwright_pdp_retry"
+                best_dom = capture.get("dom_technical_seo") or best_dom
+                best_html = capture.get("scrape_html") or best_html
+                best_network = capture.get("network_payloads") or best_network
+                best_platform = capture.get("platform_info") or best_platform
+                best_browser_capture = capture.get("browser_capture")
+                best_visual = capture.get("visual_ux_facts")
+                best_capture_confidence = float(capture.get("capture_confidence") or 0)
+                method = "playwright_browser_retry"
         except Exception:
             pass
-
-    if _playwright_enabled() and len(best_content) < 2500 and method != "playwright_pdp_retry":
-        text, dom, html_snip, err = await _try_fetch("playwright_retry", _fetch_with_playwright, url)
-        if text and len(text) > len(best_content):
-            best_content, best_dom, best_html, method = text, dom, html_snip, "playwright_retry"
 
     if settings.firecrawl_api_key and len(best_content) < 2500:
         text, dom, html_snip, err = await _try_fetch("firecrawl_retry", _fetch_with_firecrawl, url)
@@ -224,7 +225,6 @@ async def enhanced_scrape_retry(state: AgentState) -> dict[str, Any] | None:
     if len(best_content) < len(state.get("markdown_content") or ""):
         return None
 
-    best_dom = await _backfill_dom_metadata(url, best_dom)
     out: dict[str, Any] = {
         "markdown_content": best_content,
         "scrape_html": best_html,
@@ -235,27 +235,54 @@ async def enhanced_scrape_retry(state: AgentState) -> dict[str, Any] | None:
         out["network_payloads"] = best_network
     if best_platform:
         out["platform_info"] = best_platform
+    if best_browser_capture:
+        out["browser_capture"] = best_browser_capture
+    if best_visual:
+        out["visual_ux_facts"] = best_visual
+    if best_capture_confidence:
+        out["capture_confidence"] = best_capture_confidence
     return out
 
 
 async def scrape_quality_agent(state: AgentState) -> AgentState:
     """
-    Validate scrape; retry with enhanced methods if unusable.
-    Sets scrape_validation and partial_analysis flags on state.
+    Validate scrape; hard-fail gate for invalid pages; optional retry before gate.
     """
     markdown = state.get("markdown_content") or ""
     if not markdown:
-        return {"errors": ["scrape_quality: no markdown_content"]}
+        gate = evaluate_scrape_gate(
+            markdown="",
+            scrape_html=state.get("scrape_html") or "",
+            dom_technical_seo=state_dict(state, "dom_technical_seo"),
+            url=state.get("url") or "",
+        )
+        return _hard_fail_state(state, gate or {
+            "hard_fail": True,
+            "code": "empty_content",
+            "message": "The page returned no usable content for analysis.",
+            "detail": "No markdown_content after scrape.",
+            "url": state.get("url") or "",
+            "recoverable": False,
+            "agents_skipped": [],
+        })
 
     t0 = time.monotonic()
-    validation = validate_scrape(
-        markdown=markdown,
-        scrape_html=state.get("scrape_html") or "",
-        dom_technical_seo=state_dict(state, "dom_technical_seo"),
-        url=state.get("url") or "",
-    )
+    content = markdown
+    scrape_html = state.get("scrape_html") or ""
+    dom = state_dict(state, "dom_technical_seo")
+    scraper_method = state.get("scraper_method") or ""
+    capture_confidence = float(state.get("capture_confidence") or 0)
     retries = int(state.get("scrape_retry_count") or 0)
-    retry_methods: list[str] = []
+    retry_methods: list[str] = list(state.get("scrape_retry_methods") or [])
+
+    validation = validate_scrape(
+        markdown=content,
+        scrape_html=scrape_html,
+        dom_technical_seo=dom,
+        url=state.get("url") or "",
+        scraper_method=scraper_method,
+        capture_confidence=capture_confidence,
+    )
 
     max_retries = 0 if is_demo_mode() else 2
     if not validation["usable_for_analysis"] and retries < max_retries:
@@ -263,25 +290,42 @@ async def scrape_quality_agent(state: AgentState) -> AgentState:
         retry_update = await enhanced_scrape_retry(state)
         if retry_update:
             retry_methods.append(retry_update.get("scraper_method", "retry"))
+            content = retry_update["markdown_content"]
+            scrape_html = retry_update.get("scrape_html") or scrape_html
+            dom = retry_update.get("dom_technical_seo") or dom
+            scraper_method = retry_update.get("scraper_method") or scraper_method
+            capture_confidence = float(retry_update.get("capture_confidence") or capture_confidence)
             validation = validate_scrape(
-                markdown=retry_update["markdown_content"],
-                scrape_html=retry_update.get("scrape_html") or "",
-                dom_technical_seo=retry_update.get("dom_technical_seo"),
+                markdown=content,
+                scrape_html=scrape_html,
+                dom_technical_seo=dom,
                 url=state.get("url") or "",
+                scraper_method=scraper_method,
+                capture_confidence=capture_confidence,
             )
-            out: dict[str, Any] = {
-                **retry_update,
-                "scrape_validation": validation,
-                "scrape_retry_count": retries + 1,
-                "scrape_retry_methods": (state.get("scrape_retry_methods") or []) + retry_methods,
-            }
-            if not validation["usable_for_analysis"]:
-                out["partial_analysis"] = True
-                validation["warnings"] = validation.get("warnings", []) + [
-                    "Partial audit: scrape quality is low after retries. Scores are conservative."
-                ]
-            return out
+            retries += 1
 
+    gate = evaluate_scrape_gate(
+        markdown=content,
+        scrape_html=scrape_html,
+        dom_technical_seo=dom,
+        url=state.get("url") or "",
+    )
+    if gate:
+        return _hard_fail_state(
+            state,
+            gate,
+            markdown=content,
+            scrape_html=scrape_html,
+            dom=dom,
+            scraper_method=scraper_method,
+            validation=validation,
+            retries=retries,
+            retry_methods=retry_methods,
+            t0=t0,
+        )
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
     partial = not validation["usable_for_analysis"]
     if partial:
         validation["warnings"] = validation.get("warnings", []) + [
@@ -290,17 +334,16 @@ async def scrape_quality_agent(state: AgentState) -> AgentState:
 
     page_info = detect_page_type(
         url=state.get("url") or "",
-        markdown=validation and (state.get("markdown_content") or ""),
-        scrape_html=state.get("scrape_html") or "",
-        dom_technical_seo=state_dict(state, "dom_technical_seo"),
+        markdown=content,
+        scrape_html=scrape_html,
+        dom_technical_seo=dom,
     )
     if validation.get("page_type"):
         page_info["page_type"] = validation["page_type"]
         page_info["confidence"] = validation.get("page_type_confidence") or page_info["confidence"]
         page_info["reasons"] = validation.get("page_type_reasons") or page_info["reasons"]
 
-    duration_ms = int((time.monotonic() - t0) * 1000)
-    return {
+    result: dict[str, Any] = {
         "scrape_validation": validation,
         "page_type_info": page_info,
         "partial_analysis": partial,
@@ -313,3 +356,69 @@ async def scrape_quality_agent(state: AgentState) -> AgentState:
             }
         ],
     }
+    if retries:
+        result.update({
+            "markdown_content": content,
+            "scrape_html": scrape_html,
+            "dom_technical_seo": dom,
+            "scraper_method": scraper_method,
+            "scrape_retry_count": retries,
+            "scrape_retry_methods": retry_methods,
+        })
+    return result
+
+
+def _hard_fail_state(
+    state: AgentState,
+    gate: dict[str, Any],
+    *,
+    markdown: str = "",
+    scrape_html: str = "",
+    dom: dict[str, Any] | None = None,
+    scraper_method: str = "",
+    validation: dict[str, Any] | None = None,
+    retries: int = 0,
+    retry_methods: list[str] | None = None,
+    t0: float | None = None,
+) -> AgentState:
+    """Build failed state — graph stops before extraction."""
+    duration_ms = int((time.monotonic() - t0) * 1000) if t0 else 0
+    validation = dict(validation or {})
+    validation["hard_fail"] = gate
+    validation["usable_for_analysis"] = False
+    validation["scrape_quality"] = "blocked"
+    validation["warnings"] = validation.get("warnings", []) + [gate["message"]]
+
+    logger.warning(
+        "scrape_gate.hard_fail",
+        url=state.get("url"),
+        code=gate.get("code"),
+        detail=gate.get("detail"),
+    )
+
+    out: dict[str, Any] = {
+        "status": "failed",
+        "scrape_validation": validation,
+        "partial_analysis": False,
+        "errors": [f"scrape_gate:{gate['code']}: {gate['message']}"],
+        "agent_reports": [
+            {
+                "agent": "scrape_gate",
+                "model": "heuristic",
+                "output": gate,
+                "duration_ms": duration_ms,
+            }
+        ],
+    }
+    if markdown:
+        out["markdown_content"] = markdown
+    if scrape_html:
+        out["scrape_html"] = scrape_html
+    if dom:
+        out["dom_technical_seo"] = dom
+    if scraper_method:
+        out["scraper_method"] = scraper_method
+    if retries:
+        out["scrape_retry_count"] = retries
+        out["scrape_retry_methods"] = retry_methods or []
+    return out

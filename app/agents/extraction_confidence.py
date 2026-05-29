@@ -12,11 +12,13 @@ def score_extraction_confidence(
     *,
     scrape_validation: dict[str, Any] | None = None,
     field_meta: dict[str, Any] | None = None,
+    pdp_signals: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Score how trustworthy extracted product fields are."""
     sv = scrape_validation or {}
     scrape_conf = float(sv.get("confidence") or 0.7)
     meta = field_meta or structured.get("_field_sources") or {}
+    signals = pdp_signals or structured.get("_pdp_signals") or {}
     missing: list[str] = []
 
     def field_conf(value: Any, min_len: int = 1, meta_key: str | None = None) -> float:
@@ -117,6 +119,12 @@ def score_extraction_confidence(
     if strategies.get("platform_api") and "reviews" in missing and overall < 0.65:
         overall = max(overall, 0.62)
 
+    def _signal_conf(key: str) -> float:
+        conf_data = signals.get(f"{key}_confidence") or {}
+        if conf_data:
+            return round(float(conf_data.get("confidence") or 0) * scrape_conf, 2)
+        return 0.0
+
     return {
         "product_name_confidence": round(product_name_conf, 2),
         "price_confidence": round(price_conf, 2),
@@ -125,6 +133,12 @@ def score_extraction_confidence(
         "image_confidence": round(images_conf, 2),
         "schema_confidence": round(schema_conf, 2),
         "cta_confidence": round(cta_conf, 2),
+        "faq_confidence": _signal_conf("faq_count"),
+        "trust_confidence": _signal_conf("trust_badges"),
+        "shipping_confidence": _signal_conf("shipping_visible"),
+        "returns_confidence": _signal_conf("return_policy_visible"),
+        "variant_confidence": _signal_conf("variant_count"),
+        "inventory_confidence": _signal_conf("inventory"),
         "overall_extraction_confidence": overall,
         "missing_critical_fields": missing,
     }

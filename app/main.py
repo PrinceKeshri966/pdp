@@ -4,6 +4,10 @@ FastAPI application factory – registers routers, lifespan, middleware.
 """
 from __future__ import annotations
 
+from app.core.langchain_compat import patch_langchain_globals
+
+patch_langchain_globals()
+
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path

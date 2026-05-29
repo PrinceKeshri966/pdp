@@ -14,6 +14,10 @@ Phase 3–4 — Generation (AutoFix + ContentGen lazy) → END
 """
 from __future__ import annotations
 
+from app.core.langchain_compat import patch_langchain_globals
+
+patch_langchain_globals()
+
 from langgraph.graph import END, StateGraph
 
 from app.agents.state import AgentState
@@ -167,6 +171,8 @@ def build_mode1_initial_state(
         "psychology_preprocessor_facts": None,
         "extraction_confidence": None,
         "visual_ux_facts": None,
+        "browser_capture": None,
+        "capture_confidence": None,
         "json_structured_data": None,
         "seo_report": None,
         "aeo_report": None,

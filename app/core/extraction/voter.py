@@ -91,7 +91,7 @@ def vote_product_fields(
     meta: dict[str, Any] = {}
 
     for field, opts in candidates.items():
-        if field in ("image_urls", "features", "categories", "breadcrumb", "color_variants", "size_variants", "trust_badges", "video_urls"):
+        if field in ("image_urls", "features", "categories", "breadcrumb", "color_variants", "size_variants", "trust_badges", "video_urls", "collections", "variants"):
             best = max(opts, key=lambda x: x[1])
             merged[field] = best[0]
             meta[field] = {"confidence": best[1], "source": best[2]}
@@ -107,9 +107,10 @@ def vote_product_fields(
             by_val: dict[str, list[tuple[float, str]]] = {}
             for n, conf, src in priced:
                 by_val.setdefault(n, []).append((conf, src))
-            best_price = max(
+            # Prefer lowest sale price (visible DOM price), tie-break by source agreement
+            best_price = min(
                 by_val.keys(),
-                key=lambda p: (len(by_val[p]), sum(c for c, _ in by_val[p])),
+                key=lambda p: (float(p), -len(by_val[p]), -sum(c for c, _ in by_val[p])),
             )
             sources = by_val[best_price]
             agreement = len(sources) >= 2
@@ -141,5 +142,17 @@ def vote_product_fields(
         meta.setdefault("schema_confidence", {"confidence": 0.95, "source": "cross_validated"})
     elif schema and schema.get("price"):
         meta["schema_confidence"] = {"confidence": 0.9, "source": "json_ld"}
+
+    # Drop API compare_at when only platform_api supplied it without DOM/JSON-LD confirmation
+    cap_src = (meta.get("compare_at_price") or meta.get("original_price") or {}).get("source")
+    if merged.get("compare_at_price") and cap_src == "platform_api":
+        if not (dom or {}).get("compare_at_price") and not (schema or {}).get("compare_at_price"):
+            merged.pop("compare_at_price", None)
+            merged.pop("original_price", None)
+            merged.pop("discount_pct", None)
+
+    # Prefer visible discount badge over computed API discount
+    if (dom or {}).get("discount_pct") is not None:
+        merged["discount_pct"] = dom["discount_pct"]
 
     return merged, meta

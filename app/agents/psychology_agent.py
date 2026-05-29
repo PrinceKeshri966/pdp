@@ -14,7 +14,7 @@ from app.agents.context_router import format_context_for_llm
 from app.agents.json_utils import safe_json_parse_report
 from app.agents.model_router import get_model
 from app.agents.psychology_preprocessor import extract_psychology_facts
-from app.agents.scoring_engine import apply_reliability_caps
+from app.agents.scoring_engine import apply_reliability_caps, blend_score, compute_deterministic_scores
 from app.agents.state import AgentState, state_dict
 from app.core.logging import get_logger
 
@@ -59,11 +59,11 @@ def _cialdini_from_facts(facts: dict[str, Any]) -> dict[str, Any]:
         "authority": block(bool(facts.get("authority_claims")), 7.0),
         "liking": block(bool(facts.get("emotional_phrases")), 6.0),
         "scarcity": block(bool(facts.get("scarcity_language")), 7.0),
-        "unity": block(False, 2.0),
+        "unity": block(bool(facts.get("unity_detected")), 6.5),
     }
 
 
-def merge_psychology_report(facts: dict[str, Any], llm: dict[str, Any]) -> dict[str, Any]:
+def merge_psychology_report(facts: dict[str, Any], llm: dict[str, Any], *, det_score: float | None = None) -> dict[str, Any]:
     triggers: list[str] = []
     triggers.extend(facts.get("scarcity_language") or [])
     triggers.extend(facts.get("urgency_language") or [])
@@ -74,8 +74,13 @@ def merge_psychology_report(facts: dict[str, Any], llm: dict[str, Any]) -> dict[
     scores = [v["score"] for v in cialdini.values() if v.get("present")]
 
     return {
-        "overall_psychology_score": llm.get("overall_psychology_score")
-        or (round(sum(scores) / max(len(scores), 1), 1) if scores else 5.0),
+        "overall_psychology_score": det_score
+        if det_score is not None
+        else (
+            llm.get("overall_psychology_score")
+            or (round(sum(scores) / max(len(scores), 1), 1) if scores else 5.0)
+        ),
+        "deterministic_psychology_score": det_score,
         "cialdini_principles": cialdini,
         "fogg_model": llm.get("fogg_model")
         or {
@@ -91,8 +96,8 @@ def merge_psychology_report(facts: dict[str, Any], llm: dict[str, Any]) -> dict[
             "current_price_display": facts.get("price_display"),
             "charm_pricing_used": facts.get("charm_pricing_detected", False),
             "anchor_price_present": facts.get("anchor_price_present", False),
-            "decoy_pricing_detected": False,
-            "peak_end_rule_applied": False,
+            "decoy_pricing_detected": bool(facts.get("decoy_pricing_detected")),
+            "peak_end_rule_applied": bool(facts.get("peak_end_rule_detected")),
             "suggestion": (llm.get("pricing_psychology") or {}).get("suggestion", ""),
             "anchor_price_recommendation": (llm.get("pricing_psychology") or {}).get(
                 "anchor_price_recommendation", ""
@@ -102,7 +107,7 @@ def merge_psychology_report(facts: dict[str, Any], llm: dict[str, Any]) -> dict[
         or {"present": bool(facts.get("urgency_language")), "suggestions": []},
         "emotional_appeal": {
             "current_level": "moderate" if len(facts.get("emotional_phrases") or []) > 2 else "weak",
-            "identity_alignment": False,
+            "identity_alignment": bool(facts.get("identity_alignment_detected")),
             "aspirational_language": bool(facts.get("emotional_phrases")),
             "suggestions": (llm.get("emotional_appeal") or {}).get("suggestions", []),
         },
@@ -137,6 +142,7 @@ async def psychology_agent(state: AgentState) -> AgentState:
         page_contexts=state.get("page_contexts"),
         structured=structured,
         markdown=state.get("markdown_content") or "",
+        scrape_html=state.get("scrape_html") or "",
     )
 
     logger.info("psychology_agent.start", model=_MODEL)
@@ -166,6 +172,15 @@ Recommend persuasion improvements and behavioral triggers only."""
         return {"errors": [parse_err]}
 
     psychology_report = merge_psychology_report(psych_facts, llm_layer)
+    det = compute_deterministic_scores(
+        psych_facts=psych_facts,
+        scrape_validation=state_dict(state, "scrape_validation"),
+        extraction_confidence=state_dict(state, "extraction_confidence"),
+    )
+    det_psych = det["deterministic_scores"]["psychology"]
+    psych_facts["deterministic_psychology_score"] = det_psych
+    blended = blend_score(det_psych, llm_layer.get("overall_psychology_score"))
+    psychology_report = merge_psychology_report(psych_facts, llm_layer, det_score=blended)
     if psychology_report.get("overall_psychology_score") is not None:
         psychology_report["overall_psychology_score"] = apply_reliability_caps(
             float(psychology_report["overall_psychology_score"]), dict(state)

@@ -6,7 +6,12 @@ from __future__ import annotations
 import json
 import re
 from html import unescape
-from typing import Any
+from app.core.extraction.shopify_theme import extract_visible_sale_price
+from app.core.extraction.platform_parity import (
+    detect_review_provider,
+    extract_visible_review_count,
+    reconcile_review_count,
+)
 
 
 _PRICE_RE = re.compile(
@@ -21,6 +26,12 @@ _REVIEW_RE = re.compile(
     r"data-average-rating=[\"']([\d.]+)[\"']",
     re.I,
 )
+_COMPARE_AT_RE = re.compile(
+    r"(?:M\.?R\.?P\.?|Was|Compare at|Original)[^₹\d]{0,20}"
+    r"(?:₹|rs\.?\s*|inr\s*)?\s*([\d,]+(?:\.\d{1,2})?)",
+    re.I,
+)
+_DISCOUNT_RE = re.compile(r"(\d{1,2})\s*%\s*off", re.I)
 _JUDGE_ME_RE = re.compile(
     r"jdgm-prev-badge[^>]*data-number-of-reviews=[\"'](\d+)[\"']|"
     r"data-average-rating=[\"']([\d.]+)[\"']",
@@ -37,9 +48,30 @@ _LOOX_RE = re.compile(
     r"data-raters=[\"'](\d+)[\"']",
     re.I,
 )
+_STAMPED_RE = re.compile(
+    r"stamped-(?:badge|reviews-badge|main-badge)[^>]*data-rating=[\"']([\d.]+)[\"']|"
+    r"data-reviews-count=[\"'](\d+)[\"']|"
+    r"data-rating=[\"']([\d.]+)[\"'][^>]*data-count=[\"'](\d+)[\"']|"
+    r"stamped-badge[^>]*data-count=[\"'](\d+)[\"']",
+    re.I,
+)
+_OKENDO_RE = re.compile(
+    r"data-oke-reviews[^>]*data-oke-rendered-product-id|"
+    r"okeReviews[^>]*data-oke-aggregate-rating=[\"']([\d.]+)[\"']|"
+    r"data-oke-aggregate-rating=[\"']([\d.]+)[\"']|"
+    r"data-oke-review-count=[\"'](\d+)[\"']|"
+    r"oke-w-ratingAverageValue=[\"']([\d.]+)[\"']|"
+    r"oke-w-ratingCount=[\"'](\d+)[\"']",
+    re.I,
+)
+_UGC_IMAGE_RE = re.compile(
+    r"(?:stamped|okendo|yotpo|loox|judge)[^>]*(?:ugc|photo|image|media)|"
+    r"class=[\"'][^\"']*(?:review-photo|review-image|ugc-image|photo-review)",
+    re.I,
+)
 _NETWORK_PRODUCT_URL_HINTS = (
     "product", "graphql", "catalog", "item", "sku", "variant", "api",
-    "yotpo", "judge.me", "loox", "stamped", "reviews", "rating",
+    "yotpo", "judge.me", "loox", "stamped", "okendo", "oke-reviews", "reviews", "rating",
     "wc/store", "wp-json", "magento", "shopify",
 )
 
@@ -86,6 +118,20 @@ def extract_dom_selectors(html: str) -> dict[str, Any]:
     pm = _PRICE_RE.search(text)
     if pm:
         out["price"] = (pm.group(1) or pm.group(2) or "").replace(",", "")
+    cm = _COMPARE_AT_RE.search(text)
+    if cm:
+        out["compare_at_price"] = cm.group(1).replace(",", "")
+    dm = _DISCOUNT_RE.search(text)
+    if dm:
+        out["discount_pct"] = int(dm.group(1))
+    picker = len(re.findall(
+        r'select[^>]*name=["\'][^"\']*option|class=["\'][^"\']*swatch|data-variant-id|'
+        r'product-form__input[^>]*type=["\']radio["\']',
+        html,
+        re.I,
+    ))
+    if picker:
+        out["variant_picker_count"] = picker
     reviews = extract_review_widgets(html, text)
     if reviews:
         out.update(reviews)
@@ -105,6 +151,10 @@ def extract_dom_selectors(html: str) -> dict[str, Any]:
                     pass
     if re.search(r"\badd to cart\b|\badd to bag\b|\bbuy now\b", text, re.I):
         out["above_fold_cta"] = "add to cart"
+    vp = extract_visible_sale_price(html)
+    if vp and vp.get("price"):
+        out["price"] = vp["price"]
+        out["_visible_price_source"] = vp.get("source")
     return out
 
 
@@ -120,10 +170,10 @@ def extract_next_data(html: str) -> dict[str, Any]:
 
 
 def extract_review_widgets(html: str, visible_text: str | None = None) -> dict[str, Any]:
-    """Parse Yotpo, Judge.me, Loox and common review widget DOM markers."""
+    """Parse Yotpo, Judge.me, Loox, Stamped, Okendo and common review widget DOM markers."""
     out: dict[str, Any] = {}
     blob = f"{html}\n{visible_text or ''}"
-    for pattern in (_JUDGE_ME_RE, _YOTPO_RE, _LOOX_RE):
+    for pattern in (_JUDGE_ME_RE, _YOTPO_RE, _LOOX_RE, _STAMPED_RE, _OKENDO_RE):
         m = pattern.search(blob)
         if not m:
             continue
@@ -140,6 +190,13 @@ def extract_review_widgets(html: str, visible_text: str | None = None) -> dict[s
                 out["has_reviews"] = True
             except ValueError:
                 pass
+
+    # UGC image count from review widget DOM
+    ugc_matches = _UGC_IMAGE_RE.findall(blob)
+    if ugc_matches:
+        out["ugc_image_count"] = len(ugc_matches)
+        out["has_ugc_images"] = True
+
     if not out.get("review_count"):
         rm = re.search(r"(\d[\d,]*)\s*(?:reviews?|ratings?)\b", blob, re.I)
         if rm:
@@ -150,6 +207,16 @@ def extract_review_widgets(html: str, visible_text: str | None = None) -> dict[s
                     out["has_reviews"] = True
             except ValueError:
                 pass
+
+    visible_count = extract_visible_review_count(html, visible_text)
+    if visible_count is not None:
+        out["review_count"] = reconcile_review_count(out.get("review_count"), visible_count) or visible_count
+        out["has_reviews"] = True
+
+    provider = detect_review_provider(html)
+    if provider:
+        out["review_provider"] = provider
+
     return out
 
 
@@ -162,7 +229,7 @@ def extract_review_from_network(payloads: list[dict[str, Any]]) -> dict[str, Any
         if not isinstance(body, (dict, list)):
             continue
         parsed: dict[str, Any] = {}
-        if "judge.me" in url or "yotpo" in url or "loox" in url:
+        if any(p in url for p in ("judge.me", "yotpo", "loox", "stamped", "okendo", "oke-reviews")):
             parsed = _parse_review_provider_body(body, url)
         if not parsed:
             parsed = _walk_product_like(body, depth=0)
@@ -218,6 +285,66 @@ def _parse_review_provider_body(body: Any, url: str) -> dict[str, Any]:
                     out["avg_rating"] = float(avg)
                 except (TypeError, ValueError):
                     pass
+        if "stamped" in url:
+            widget = body.get("widget") if isinstance(body.get("widget"), dict) else body
+            rc = (
+                widget.get("count")
+                or widget.get("reviews_count")
+                or widget.get("total_reviews")
+                or body.get("count")
+                or body.get("total")
+            )
+            avg = widget.get("rating") or widget.get("average_rating") or body.get("rating")
+            if isinstance(body, list) and body:
+                rc = rc or len(body)
+            if rc:
+                try:
+                    out["review_count"] = int(rc)
+                except (TypeError, ValueError):
+                    pass
+            if avg:
+                try:
+                    out["avg_rating"] = float(avg)
+                except (TypeError, ValueError):
+                    pass
+            # UGC photos in Stamped reviews array
+            reviews = body.get("reviews") or body.get("data") or (body if isinstance(body, list) else [])
+            if isinstance(reviews, list):
+                ugc = sum(
+                    1 for r in reviews
+                    if isinstance(r, dict) and (r.get("reviewUserPhotos") or r.get("photos") or r.get("images"))
+                )
+                if ugc:
+                    out["ugc_image_count"] = ugc
+                    out["has_ugc_images"] = True
+        if "okendo" in url or "oke-reviews" in url:
+            data = body.get("reviewAggregate") or body.get("aggregate") or body
+            if isinstance(data, dict):
+                rc = data.get("reviewCount") or data.get("review_count") or data.get("count")
+                avg = data.get("ratingAndReviewCountByLevel") or data.get("rating")
+                if isinstance(avg, dict):
+                    avg = avg.get("average") or avg.get("rating")
+                if not avg:
+                    avg = data.get("averageRating") or data.get("average_rating")
+                if rc:
+                    try:
+                        out["review_count"] = int(rc)
+                    except (TypeError, ValueError):
+                        pass
+                if avg:
+                    try:
+                        out["avg_rating"] = float(avg)
+                    except (TypeError, ValueError):
+                        pass
+            reviews = body.get("reviews") or []
+            if isinstance(reviews, list):
+                ugc = sum(
+                    1 for r in reviews
+                    if isinstance(r, dict) and (r.get("media") or r.get("images") or r.get("photos"))
+                )
+                if ugc:
+                    out["ugc_image_count"] = max(out.get("ugc_image_count") or 0, ugc)
+                    out["has_ugc_images"] = True
     if out:
         out["has_reviews"] = True
     return out

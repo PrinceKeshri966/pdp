@@ -5,7 +5,7 @@ services:
     name: pdp-dev
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && playwright install chromium && npm install -g lighthouse@12.6.1
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
@@ -18,4 +18,4 @@ services:
       - key: DEV_AUTH_BYPASS
         value: "false"
       - key: SKIP_PLAYWRIGHT
-        value: "true"
+        value: "false"

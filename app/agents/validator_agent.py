@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from app.agents.state import AgentState, state_dict
+from app.core.browser_capture.confidence import compute_section_confidence
 from app.core.demo_mode import is_demo_mode
 from app.core.logging import get_logger
 from app.rulesets.base import PDP_LEAKAGE_TERMS
@@ -172,6 +173,7 @@ def validate_agent_reports(state: AgentState) -> dict[str, Any]:
 async def validator_agent(state: AgentState) -> AgentState:
     t0 = time.monotonic()
     report = validate_agent_reports(state)
+    audit_reliability = build_audit_reliability(state, report)
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "validator_agent.done",
@@ -179,7 +181,6 @@ async def validator_agent(state: AgentState) -> AgentState:
         contradictions=len(report.get("contradictions_found", [])),
         flags=len(report.get("hallucination_flags", [])),
     )
-    audit_reliability = build_audit_reliability(state, report)
     return {
         "validation_report": report,
         "audit_reliability": audit_reliability,
@@ -196,6 +197,18 @@ async def validator_agent(state: AgentState) -> AgentState:
 
 def build_audit_reliability(state: AgentState, validation_report: dict[str, Any]) -> dict[str, Any]:
     """Unified payload for API + frontend."""
+    from app.core.evidence.audit_findings import build_audit_evidence
+    from app.core.evidence.check_registry import build_check_values, sync_structured_data_reports
+
+    state_dict_copy = dict(state)
+    sync_structured_data_reports(state_dict_copy)
+    # Persist synced structured_data back to live state
+    if state_dict_copy.get("seo_report"):
+        state["seo_report"] = state_dict_copy["seo_report"]
+    if state_dict_copy.get("aeo_report"):
+        state["aeo_report"] = state_dict_copy["aeo_report"]
+    check_values = build_check_values(state_dict_copy)
+
     sv = state_dict(state, "scrape_validation")
     ec = state_dict(state, "extraction_confidence")
     det = state_dict(state, "deterministic_scores")
@@ -240,4 +253,12 @@ def build_audit_reliability(state: AgentState, validation_report: dict[str, Any]
         "agent_plan_skips": plan.get("skipped_reasons", {}),
         "is_js_heavy": sv.get("is_js_heavy"),
         "demo_mode": is_demo_mode(),
+        "browser_first": (state.get("scraper_method") or "").startswith("playwright"),
+        "capture_confidence": state.get("capture_confidence"),
+        "section_confidence": compute_section_confidence(dict(state)).get("section_confidence", {}),
+        "lighthouse": ((state.get("browser_capture") or {}).get("lighthouse")),
+        "schema_validation": ((state.get("browser_capture") or {}).get("schema_validation")),
+        "technical_crawl": ((state.get("browser_capture") or {}).get("technical_crawl")),
+        "check_values": check_values,
+        "audit_evidence": build_audit_evidence(state_dict_copy),
     }

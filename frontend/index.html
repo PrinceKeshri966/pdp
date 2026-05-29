@@ -406,7 +406,117 @@
             const auditRel = data.audit_reliability || jsd._audit_reliability || {};
             const runAnalytics = data.run_analytics || jsd._run_analytics || {};
             const frontendValidation = data.frontend_validation || auditRel.frontend_validation || jsd._frontend_validation || {};
-            return { ...data, dom_technical_seo: dom, audit_reliability: auditRel, run_analytics: runAnalytics, frontend_validation: frontendValidation };
+            const scrapeValidation = data.scrape_validation || jsd._scrape_validation || {};
+            return {
+                ...data,
+                dom_technical_seo: dom,
+                audit_reliability: auditRel,
+                run_analytics: runAnalytics,
+                frontend_validation: frontendValidation,
+                scrape_validation: scrapeValidation,
+            };
+        }
+
+        const SCRAPE_GATE_REASONS = {
+            page_not_found: 'Page Not Found (404)',
+            product_not_found: 'Product Not Found',
+            access_denied: 'Access Denied (403)',
+            captcha_block: 'CAPTCHA / Bot Check',
+            login_required: 'Login Required',
+            empty_content: 'Empty Content',
+        };
+
+        const SCRAPE_GATE_DESCRIPTIONS = {
+            page_not_found: 'The provided URL does not contain a valid product or landing page.',
+            product_not_found: 'The product page was not found or is no longer available.',
+            access_denied: 'The site blocked access to this page. No audit could be performed.',
+            captcha_block: 'The site returned a bot-check or CAPTCHA page instead of real content.',
+            login_required: 'This page requires login. We cannot audit gated content.',
+            empty_content: 'The page returned too little content to analyze.',
+        };
+
+        /** Hard-fail scrape gate payload when analysis stopped before extraction. */
+        function resolveScrapeGateFailure(result) {
+            if (!result) return null;
+            const sv = result.scrape_validation || result.json_structured_data?._scrape_validation || {};
+            const gate = sv.hard_fail;
+            if (gate && (gate.hard_fail || gate.code)) return gate;
+            const scrapeGateErr = (result.errors || []).find(e => String(e).startsWith('scrape_gate:'));
+            if (result.status === 'failed' && scrapeGateErr) {
+                const code = String(scrapeGateErr).split(':')[1] || 'unknown';
+                return {
+                    code,
+                    message: SCRAPE_GATE_DESCRIPTIONS[code] || 'The page could not be analyzed.',
+                    hard_fail: true,
+                };
+            }
+            return null;
+        }
+
+        function getScrapeGateReasonLabel(code) {
+            return SCRAPE_GATE_REASONS[code] || 'Invalid Page';
+        }
+
+        function getScrapeGateDescription(code, gate) {
+            return gate?.message && !String(gate.message).startsWith('scrape_gate:')
+                ? gate.message
+                : (SCRAPE_GATE_DESCRIPTIONS[code] || 'The provided URL does not contain a valid product or landing page.');
+        }
+
+        /** True when title is just a hostname / bare domain (e.g. "boat-lifestyle.com"). */
+        function isBareHostnameTitle(title, url) {
+            const t = String(title || '').trim();
+            if (!t) return false;
+            const lower = t.toLowerCase().replace(/^www\./, '');
+            if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(lower)) return true;
+            try {
+                const raw = url && String(url).trim();
+                if (!raw) return false;
+                const u = new URL(raw.startsWith('http') ? raw : `https://${raw}`);
+                const host = u.hostname.replace(/^www\./, '').toLowerCase();
+                const hostBare = host.split('.')[0];
+                if (lower === host || lower === host.replace(/\./g, '') || lower === hostBare) return true;
+                if (t.length < 28 && (lower.includes(host) || lower === hostBare)) return true;
+            } catch { /* ignore */ }
+            return false;
+        }
+
+        /**
+         * Authoritative page title for UI — prefer rendered DOM, never show bare hostname.
+         * Priority: dom_technical_seo.title_tag → seo_report.title_tag.value →
+         *           json_structured_data.product_name → seo_report.h1.value
+         */
+        function resolvePageTitle(result) {
+            if (!result) return '';
+            const dom = result.dom_technical_seo || {};
+            const seo = result.seo_report || {};
+            const jsd = result.json_structured_data || {};
+            const url = result.source_url || jsd.product_url || '';
+            const candidates = [
+                dom.title_tag,
+                seo.title_tag?.value,
+                jsd.product_name,
+                seo.h1?.value,
+            ];
+            for (const c of candidates) {
+                if (!c || !String(c).trim()) continue;
+                const s = String(c).trim();
+                if (isBareHostnameTitle(s, url)) continue;
+                return s;
+            }
+            return '';
+        }
+
+        /** Title tag block for cards/SERP — merges seo_report metadata with resolved value. */
+        function resolveTitleTagBlock(result) {
+            const seo = result?.seo_report || {};
+            const base = seo.title_tag || {};
+            const value = resolvePageTitle(result);
+            return {
+                ...base,
+                value,
+                length: value ? value.length : 0,
+            };
         }
 
         /** AutoFix fields that passed before/after validation (no identical no-op fixes). */
@@ -887,10 +997,77 @@
             trust_moneyback: 'trust',
             faq_found: 'faq',
             faq_conversational: 'faq',
+            faq_schema: 'faq',
             price_charm: 'pricing',
             price_anchor: 'pricing',
             decoy_pricing: 'pricing',
+            img_lifestyle: null,
+            img_angles: null,
+            img_video: null,
+            img_zoom: null,
         };
+
+        function resolveCheckValue(checkId, result) {
+            const cv = result?.audit_reliability?.check_values;
+            if (cv && Object.prototype.hasOwnProperty.call(cv, checkId)) {
+                return cv[checkId];
+            }
+            return undefined;
+        }
+
+        function resolveAuditEvidence(checkId, result) {
+            return result?.audit_reliability?.audit_evidence?.[checkId] || null;
+        }
+
+        window.resolveCheckValue = resolveCheckValue;
+        window.resolveAuditEvidence = resolveAuditEvidence;
+        window.resolveTitleTagBlock = resolveTitleTagBlock;
+        window.getCompetitorIntelligence = getCompetitorIntelligence;
+        window.getValidatedAutofixFix = getValidatedAutofixFix;
+
+        function AuditEvidenceItems({ evidence }) {
+            if (!evidence?.items?.length) return null;
+            return (
+                <div className="space-y-2">
+                    {evidence.items.map((item, i) => (
+                        <div key={i} className="flex justify-between gap-3 text-sm border-b border-slate-100 last:border-0 pb-2 last:pb-0">
+                            <span className="text-slate-500 shrink-0">{item.label}</span>
+                            <span className="text-slate-800 font-medium text-right break-words">{item.value}</span>
+                        </div>
+                    ))}
+                </div>
+            );
+        }
+
+        function HowWeDetectedBlock({ evidence }) {
+            if (!evidence) return null;
+            return (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+                    <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">How we detected this</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+                        <div>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase">Source</p>
+                            <p className="text-slate-800 font-medium mt-0.5">{evidence.source || '—'}</p>
+                        </div>
+                        <div>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase">Confidence</p>
+                            <p className="text-slate-800 font-medium mt-0.5">{evidence.confidence != null ? `${Math.round(evidence.confidence * 100)}%` : '—'}</p>
+                        </div>
+                        <div className="sm:col-span-1">
+                            <p className="text-[10px] font-bold text-slate-400 uppercase">Detection method</p>
+                            <p className="text-slate-700 mt-0.5 text-xs leading-relaxed">{evidence.detection_method || '—'}</p>
+                        </div>
+                    </div>
+                    {evidence.extracted_text && (
+                        <div className="pt-2 border-t border-slate-200">
+                            <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Extracted text</p>
+                            <p className="text-sm text-slate-800 leading-relaxed">{evidence.extracted_text}</p>
+                        </div>
+                    )}
+                    <AuditEvidenceItems evidence={evidence} />
+                </div>
+            );
+        }
 
         function stripHtmlEvidence(raw) {
             if (!raw) return '';
@@ -916,7 +1093,7 @@
             };
             const direct = {
                 kw_in_h1: seo.h1?.value,
-                kw_in_title: seo.title_tag?.value,
+                kw_in_title: resolvePageTitle(result),
                 kw_in_meta: seo.meta_description?.value,
             };
             if (direct[checkId]) {
@@ -926,8 +1103,8 @@
                 const human = stripHtmlEvidence(detectedVal);
                 return { label: labels[checkId] || 'Evidence detected', value: human || detectedVal, technical: detectedVal };
             }
-            if (checkId === 'trust_reviews' && ux.trust_signals?.has_reviews != null) {
-                return { label: 'Reviews on page', value: ux.trust_signals.has_reviews ? 'Reviews found' : 'No reviews section', technical: null };
+            if (checkId === 'trust_reviews' && ux.trust_signals?.reviews_present != null) {
+                return { label: 'Reviews on page', value: ux.trust_signals.reviews_present ? 'Reviews found' : 'No reviews section', technical: null };
             }
             return null;
         }
@@ -1125,7 +1302,7 @@
                 return '&lt;!-- VERIFIED: no h1 element in page DOM --&gt;';
             }
             if (checkId === 'kw_in_title') {
-                const t = dom.title_tag ?? seo.title_tag?.value;
+                const t = resolvePageTitle(result) || dom.title_tag;
                 if (t) return '&lt;title&gt;' + esc(t.slice(0, 120)) + '&lt;/title&gt;';
                 return '&lt;!-- VERIFIED: empty or missing title tag --&gt;';
             }
@@ -1159,34 +1336,39 @@
             const ux = result?.ux_report || {};
             const map = {
                 kw_in_h1: seo.h1?.value,
-                kw_in_title: seo.title_tag?.value,
+                kw_in_title: resolvePageTitle(result),
                 kw_in_meta: seo.meta_description?.value,
-                trust_reviews: ux.trust_signals?.has_reviews != null ? (ux.trust_signals.has_reviews ? 'Reviews found' : 'No reviews section') : null,
+                trust_reviews: ux.trust_signals?.reviews_present != null ? (ux.trust_signals.reviews_present ? 'Reviews found' : 'No reviews section') : null,
                 trust_rating: ux.trust_signals?.avg_rating != null ? `Rating: ${ux.trust_signals.avg_rating}` : null,
-                img_video: ux.media?.has_video != null ? (ux.media.has_video ? 'Video present' : 'No product video') : null,
+                img_video: ux.product_imagery?.video_present != null ? (ux.product_imagery.video_present ? 'Video present' : 'No product video') : null,
             };
             return map[checkId] || null;
         }
 
-        function CheckSitePreview({ url, checkId, passed, visualUx }) {
+        function CheckSitePreview({ url, checkId, passed, visualUx, evidence }) {
             const [useIframe, setUseIframe] = useState(false);
             const [imgLoaded, setImgLoaded] = useState(false);
             const containerRef = useRef(null);
             const imgRef = useRef(null);
             const loc = getCheckPageLocation(checkId);
             const preview = getScreenshotSrc(url, visualUx);
-            const boundKey = CHECK_BOUND_KEYS[checkId];
+            const ev = evidence?.evidence || evidence;
+            const boundKey = ev?.bound_key || CHECK_BOUND_KEYS[checkId];
             const bounds = boundKey ? visualUx?.element_bounds?.[boundKey] : null;
             const viewportW = visualUx?.viewport_width || 1366;
             const viewportH = visualUx?.viewport_height || 900;
+            const metrics = ev?.visual_metrics || {};
+            const showFoldLine = metrics.fold_line_y != null && (checkId === 'cta_above_fold' || checkId === 'cta_found');
 
             if (!url) return null;
-            if (!bounds && (!loc.visualPreview || !loc.top)) return null;
+            if (!bounds && ev?.type !== 'visual' && (!loc.visualPreview || !loc.top)) return null;
 
             const [overlay, setOverlay] = useState(null);
+            const [foldPct, setFoldPct] = useState(null);
             useEffect(() => {
                 if (!bounds) {
                     setOverlay({ top: loc.top, height: loc.height || '15%', left: '2%', width: 'calc(100% - 1rem)' });
+                    setFoldPct(showFoldLine ? `${Math.min(95, (viewportH / viewportH) * 100)}%` : null);
                     return;
                 }
                 const cw = containerRef.current?.clientWidth || 0;
@@ -1195,14 +1377,24 @@
                 const nh = imgRef.current?.naturalHeight || viewportH;
                 const pos = mapBoundsToOverlayPct(bounds, viewportW, viewportH, cw, ch, nw, nh);
                 setOverlay(pos ? { ...pos, height: pos.height } : { top: loc.top, height: loc.height || '15%', left: '2%', width: 'calc(100% - 1rem)' });
-            }, [imgLoaded, bounds, loc.top, loc.height]);
+                if (showFoldLine && nh && ch) {
+                    const scale = Math.max(cw / nw, ch / nh);
+                    const foldY = (metrics.fold_line_y || viewportH) * (nh / viewportH) * scale;
+                    setFoldPct(`${Math.min(98, Math.max(0, (foldY / ch) * 100))}%`);
+                } else {
+                    setFoldPct(null);
+                }
+            }, [imgLoaded, bounds, loc.top, loc.height, showFoldLine, viewportH, metrics.fold_line_y]);
 
-            const scrollPct = loc.top ? Math.min(85, Math.max(0, parseFloat(loc.top) - 5)) : 0;
-            const objectPosition = bounds ? 'top center' : `center ${scrollPct}%`;
+            const scrollPct = bounds && overlay?.top
+                ? Math.min(85, Math.max(0, parseFloat(String(overlay.top)) - 8))
+                : (loc.top ? Math.min(85, Math.max(0, parseFloat(loc.top) - 5)) : 0);
+            const objectPosition = bounds ? `center ${scrollPct}%` : `center ${scrollPct}%`;
+            const highlightLabel = ev?.highlight_region || loc.zone;
 
             return (
                 <div className="relative rounded-xl overflow-hidden border border-slate-200 bg-slate-100">
-                    <div ref={containerRef} className="h-44 relative overflow-hidden">
+                    <div ref={containerRef} className="h-56 md:h-64 relative overflow-hidden">
                         {useIframe || !preview ? (
                             <iframe
                                 title="Site preview"
@@ -1216,29 +1408,59 @@
                                 ref={imgRef}
                                 src={preview}
                                 alt="Your site preview"
-                                className="w-full h-full object-cover object-top"
+                                className="w-full h-full object-cover"
                                 style={{ objectPosition }}
                                 loading="lazy"
                                 onLoad={() => setImgLoaded(true)}
                                 onError={() => setUseIframe(true)}
                             />
                         )}
-                        {overlay && (
+                        {showFoldLine && foldPct && (
                             <div
-                                className={`absolute border-2 rounded-lg pointer-events-none ${passed ? 'border-emerald-500 bg-emerald-500/20' : 'border-red-500 bg-red-500/20 animate-pulse'}`}
-                                style={{
-                                    top: overlay.top,
-                                    left: overlay.left || '2%',
-                                    width: overlay.width || 'calc(100% - 1rem)',
-                                    height: overlay.height || '15%',
-                                }}
+                                className="absolute left-0 right-0 border-t-2 border-dashed border-amber-500 pointer-events-none z-10"
+                                style={{ top: foldPct }}
                             >
-                                <span className={`absolute -top-5 left-0 text-[10px] font-bold px-2 py-0.5 rounded shadow bg-white ${passed ? 'text-emerald-700' : 'text-red-700'}`}>
-                                    ↓ {loc.zone}
-                                </span>
+                                <span className="absolute right-1 -top-4 text-[9px] font-bold bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded shadow">Fold line</span>
                             </div>
                         )}
+                        {overlay && (
+                            <>
+                                <div
+                                    className={`absolute border-2 rounded-lg pointer-events-none z-20 ${passed ? 'border-emerald-500 bg-emerald-500/20' : 'border-red-500 bg-red-500/25'}`}
+                                    style={{
+                                        top: overlay.top,
+                                        left: overlay.left || '2%',
+                                        width: overlay.width || 'calc(100% - 1rem)',
+                                        height: overlay.height || '15%',
+                                    }}
+                                />
+                                <div
+                                    className="absolute pointer-events-none z-30 flex flex-col items-center"
+                                    style={{
+                                        top: `calc(${overlay.top} - 28px)`,
+                                        left: overlay.left || '8%',
+                                    }}
+                                >
+                                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded shadow bg-white whitespace-nowrap ${passed ? 'text-emerald-700' : 'text-red-700'}`}>
+                                        {highlightLabel}
+                                    </span>
+                                    <svg width="16" height="20" viewBox="0 0 16 20" className={passed ? 'text-emerald-600' : 'text-red-600'}>
+                                        <path fill="currentColor" d="M8 20 L0 6 L6 6 L6 0 L10 0 L10 6 L16 6 Z" />
+                                    </svg>
+                                </div>
+                            </>
+                        )}
                     </div>
+                    {(metrics.distance_from_viewport_px > 0 || metrics.packshot != null) && (
+                        <div className="px-2 py-1.5 bg-white border-t border-slate-100 text-[10px] text-slate-600 flex flex-wrap gap-x-3 gap-y-0.5">
+                            {metrics.distance_from_viewport_px > 0 && (
+                                <span><strong>{metrics.distance_from_viewport_px}px</strong> below fold</span>
+                            )}
+                            {metrics.packshot != null && (
+                                <span>Packshot: <strong>{metrics.packshot}</strong> · Lifestyle: <strong>{metrics.lifestyle}</strong></span>
+                            )}
+                        </div>
+                    )}
                     <p className="text-[10px] text-slate-500 px-2 py-1.5 bg-white border-t border-slate-100 truncate">{url.replace(/^https?:\/\//, '')}</p>
                 </div>
             );
@@ -1381,394 +1603,6 @@
                 seen.add(k);
                 return true;
             });
-        }
-
-        function extractPdfReportData(result) {
-            const seo = result?.seo_report || {};
-            const aeo = result?.aeo_report || {};
-            const ux = result?.ux_report || {};
-            const psych = result?.psychology_report || {};
-            const comp = result?.competitor_report || {};
-            const diag = result?.final_diagnosis || {};
-            const autofix = result?.autofix_report || {};
-            const reliability = result?.audit_reliability || diag.audit_reliability || {};
-            const fv = result?.frontend_validation || reliability.frontend_validation || {};
-            const compTrust = getCompetitorTrust(comp);
-            const compIntel = getCompetitorIntelligence(comp, result);
-            const compSites = (comp.live_compare?.sites || []).filter((s) => s.role !== 'user' && s.role !== 'you');
-
-            const topIssues = uniqStrings([
-                ...(seo.top_issues || []),
-                ...(aeo.gaps || []),
-                ...(ux.friction_points || []),
-                ...(psych.missing_triggers || []),
-                ...(comp.your_gaps_vs_competitors || []),
-            ]).slice(0, 10);
-
-            const recommendations = uniqStrings([
-                ...(seo.recommendations || []),
-                ...(seo.quick_wins || []),
-                ...(aeo.recommendations || []),
-                ...(aeo.quick_wins_for_ai || []),
-                ...(ux.recommendations || []),
-                ...(psych.emotional_appeal?.suggestions || []),
-                ...(psych.trust_building?.suggestions || []),
-                ...(comp.opportunities || []),
-                ...(comp.category_best_practices || []),
-                ...(autofix.priority_action_plan || []).map((a) => a.action || a.title || a),
-            ]).slice(0, 12);
-
-            const autofixItems = [];
-            const addFix = (label, val, maxLen = 600) => {
-                if (!val) return;
-                const t = String(val).trim();
-                if (!t) return;
-                autofixItems.push({ label, text: t.length > maxLen ? `${t.slice(0, maxLen)}…` : t });
-            };
-            addFix('Title Tag', getValidatedAutofixFix(autofix, 'fixed_title_tag'));
-            addFix('Meta Description', getValidatedAutofixFix(autofix, 'fixed_meta_description'));
-            addFix('H1 Headline', getValidatedAutofixFix(autofix, 'fixed_h1'));
-            addFix('Product Description', getValidatedAutofixFix(autofix, 'rewritten_product_description'), 900);
-            (autofix.suggested_h2s || []).slice(0, 5).forEach((h, i) => addFix(`Suggested H2 ${i + 1}`, h));
-            (autofix.priority_action_plan || []).slice(0, 6).forEach((a, i) => {
-                addFix(`Priority Action ${i + 1}`, a.action || a.title || (typeof a === 'string' ? a : null));
-            });
-            if (autofix.pricing_psychology?.suggestion) addFix('Pricing Psychology', autofix.pricing_psychology.suggestion);
-            if (autofix.schema_markup_snippet) {
-                addFix('Product Schema', autofix.schema_markup_snippet.slice(0, 400) + (autofix.schema_markup_snippet.length > 400 ? '…' : ''));
-            }
-
-            const mp = comp.market_positioning || {};
-            const content = result?.generated_content || {};
-            const reliabilityLines = uniqStrings([
-                `Audit reliability: ${reliability.report_reliability || 'medium'}`,
-                `Scrape quality: ${reliability.scrape_quality || '—'}`,
-                `Extraction confidence: ${reliability.extraction_confidence_pct ?? Math.round((reliability.extraction_confidence || 0) * 100)}%`,
-                reliability.platform ? `Platform: ${reliability.platform}` : null,
-                (reliability.page_type || reliability.detected_page_type) ? `Page type: ${reliability.page_type || reliability.detected_page_type}` : null,
-                reliability.visual_verified === false ? 'Visual verification unavailable — some UX findings are text-inferred only.' : null,
-                reliability.partial_analysis ? 'Partial analysis — not all checks completed.' : null,
-                ...(reliability.warnings || []).slice(0, 4),
-                ...(reliability.hallucination_flags || []).map((f) => `Hallucination flag: ${f}`),
-                ...(reliability.contradictions || []).slice(0, 2).map((c) => `Contradiction: ${c}`),
-                ...(fv.warnings || []).slice(0, 3).map((w) => `Frontend validation: ${w}`),
-            ]).slice(0, 12);
-
-            const tabDetails = {
-                seo: uniqStrings([
-                    seo.title_tag?.value && `Title tag: ${seo.title_tag.value}`,
-                    seo.meta_description?.value && `Meta description: ${seo.meta_description.value}`,
-                    seo.h1?.value && `H1: ${seo.h1.value}`,
-                    seo.keyword_analysis?.primary_keyword && `Primary keyword: ${seo.keyword_analysis.primary_keyword}`,
-                    ...(seo.top_issues || []),
-                    ...(seo.recommendations || []),
-                    ...(seo.quick_wins || []),
-                ]),
-                aeo: uniqStrings([
-                    aeo.gaps?.length ? `Gaps: ${aeo.gaps.join('; ')}` : null,
-                    ...(aeo.gaps || []),
-                    ...(aeo.recommendations || []),
-                    ...(aeo.quick_wins_for_ai || []),
-                    ...(aeo.top_ai_queries_missed || []).map((q) => `Missing AI query: ${q}`),
-                ]),
-                ux: uniqStrings([
-                    ...(ux.friction_points || []),
-                    ...(ux.recommendations || []),
-                    ...(ux.mobile_ux?.issues || []),
-                    ux.cta_analysis?.text_quality && `CTA text quality: ${ux.cta_analysis.text_quality}`,
-                    ux.checkout_friction?.cart_abandonment_risk && `Cart abandonment risk: ${ux.checkout_friction.cart_abandonment_risk}`,
-                ]),
-                psychology: uniqStrings([
-                    ...(psych.missing_triggers || []),
-                    ...(psych.emotional_appeal?.suggestions || []),
-                    ...(psych.trust_building?.suggestions || []),
-                    psych.overall_psychology_score != null && `Psychology score: ${toScore100(psych.overall_psychology_score)}/100`,
-                ]),
-                content: uniqStrings([
-                    content.meta_title && `Meta title: ${content.meta_title}`,
-                    content.meta_description && `Meta description: ${content.meta_description}`,
-                    content.product_description && `Product description: ${String(content.product_description).slice(0, 500)}`,
-                    ...(content.bullet_points || []),
-                    ...(content.faqs || []).map((f) => `FAQ: ${f.question || f}`),
-                    content.social_captions?.instagram && `Instagram caption: ${content.social_captions.instagram}`,
-                ]),
-            };
-
-            return {
-                url: result?.source_url || '',
-                generatedAt: new Date(),
-                scores: {
-                    overall: toScore100(diag.overall_health_score),
-                    seo: toScore100(seo.overall_seo_score),
-                    ai: toScore100(aeo.ai_visibility_score),
-                    ux: toScore100(ux.conversion_score),
-                    psych: toScore100(psych.overall_psychology_score),
-                    competitor: toScore100(diag.score_breakdown?.competitor_position),
-                },
-                topIssues,
-                recommendations,
-                autofixItems,
-                competitorSummary: {
-                    dataSource: comp.data_source || 'live_scrape',
-                    competitorsAnalyzed: (comp.competitors_analyzed || compSites.map((s) => s.name).filter(Boolean)).slice(0, 8),
-                    positioning: mp,
-                    gaps: (comp.your_gaps_vs_competitors || []).slice(0, 6),
-                    winningPatterns: (comp.winning_patterns || []).slice(0, 5),
-                    opportunities: (comp.opportunities || []).slice(0, 5),
-                    trustReason: compTrust.reason,
-                    unavailable: compIntel.unavailable,
-                    unavailableReason: compIntel.unavailableReason,
-                    extractionConfidencePct: compIntel.extPct,
-                },
-                reliabilityLines,
-                tabDetails,
-            };
-        }
-
-        function downloadCommerceReportPdf(result) {
-            if (!window.jspdf?.jsPDF) throw new Error('PDF library not loaded');
-            const { jsPDF } = window.jspdf;
-            const data = extractPdfReportData(result);
-            const doc = new jsPDF({ unit: 'pt', format: 'a4', compress: true });
-            const pageW = doc.internal.pageSize.getWidth();
-            const pageH = doc.internal.pageSize.getHeight();
-            const margin = 48;
-            const contentW = pageW - margin * 2;
-            let y = margin;
-
-            const C = {
-                navy: [15, 23, 42],
-                indigo: [99, 102, 241],
-                slate: [100, 116, 139],
-                red: [220, 38, 38],
-                emerald: [5, 150, 105],
-                white: [255, 255, 255],
-                light: [203, 213, 225],
-                label: [199, 210, 254],
-            };
-
-            const ensureSpace = (need) => {
-                if (y + need > pageH - margin) {
-                    doc.addPage();
-                    y = margin;
-                }
-            };
-
-            const sectionTitle = (title) => {
-                ensureSpace(40);
-                doc.setFillColor(...C.indigo);
-                doc.rect(margin, y, 4, 20, 'F');
-                doc.setFont('helvetica', 'bold');
-                doc.setFontSize(14);
-                doc.setTextColor(...C.navy);
-                doc.text(title, margin + 12, y + 15);
-                y += 34;
-            };
-
-            const bodyText = (text, opts = {}) => {
-                const size = opts.size || 10;
-                const lh = opts.lineHeight || size * 1.45;
-                doc.setFont('helvetica', opts.bold ? 'bold' : 'normal');
-                doc.setFontSize(size);
-                doc.setTextColor(...(opts.color || C.slate));
-                const lines = doc.splitTextToSize(String(text), contentW - (opts.indent || 0));
-                lines.forEach((line) => {
-                    ensureSpace(lh);
-                    doc.text(line, margin + (opts.indent || 0), y);
-                    y += lh;
-                });
-                y += opts.gap ?? 8;
-            };
-
-            const bulletList = (items, opts = {}) => {
-                (items || []).forEach((item) => {
-                    const lines = doc.splitTextToSize(String(item), contentW - 16);
-                    lines.forEach((line, li) => {
-                        ensureSpace(15);
-                        if (li === 0) {
-                            doc.setFont('helvetica', 'normal');
-                            doc.setFontSize(opts.size || 10);
-                            doc.setTextColor(...(opts.color || C.slate));
-                            doc.text('•', margin, y);
-                        }
-                        doc.text(line, margin + 12, y);
-                        y += 14;
-                    });
-                    y += 3;
-                });
-                y += 6;
-            };
-
-            // Cover page
-            doc.setFillColor(...C.navy);
-            doc.rect(0, 0, pageW, 228, 'F');
-            doc.setFillColor(...C.indigo);
-            doc.rect(0, 228, pageW, 6, 'F');
-
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(11);
-            doc.setTextColor(...C.label);
-            doc.text(BRAND_NAME.toUpperCase(), margin, 58);
-
-            doc.setFontSize(26);
-            doc.setTextColor(...C.white);
-            doc.text('Product Page Optimization Report', margin, 98);
-
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(10);
-            doc.setTextColor(...C.light);
-            doc.text(doc.splitTextToSize(data.url || 'URL not available', contentW), margin, 132);
-
-            y = 268;
-            doc.setFontSize(10);
-            doc.setTextColor(...C.slate);
-            doc.text(`Generated ${data.generatedAt.toLocaleString(undefined, { dateStyle: 'long', timeStyle: 'short' })}`, margin, y);
-            y += 32;
-
-            if (data.scores.overall != null) {
-                doc.setDrawColor(...C.indigo);
-                doc.setLineWidth(2);
-                doc.roundedRect(margin, y, 132, 84, 8, 8, 'S');
-                doc.setFont('helvetica', 'bold');
-                doc.setFontSize(34);
-                doc.setTextColor(...C.indigo);
-                doc.text(String(data.scores.overall), margin + 22, y + 50);
-                doc.setFontSize(10);
-                doc.setTextColor(...C.slate);
-                doc.text('/100', margin + 68, y + 50);
-                doc.setFont('helvetica', 'bold');
-                doc.setFontSize(12);
-                doc.setTextColor(...C.navy);
-                doc.text('Overall Health Score', margin + 152, y + 38);
-                doc.setFont('helvetica', 'normal');
-                doc.setFontSize(10);
-                doc.setTextColor(...C.slate);
-                doc.text('Composite across SEO, AI visibility, UX,', margin + 152, y + 56);
-                doc.text('psychology, and competitor position.', margin + 152, y + 70);
-            }
-
-            doc.addPage();
-            y = margin;
-
-            sectionTitle('Score Overview');
-            [
-                ['Google Ranking (SEO)', data.scores.seo],
-                ['AI Visibility', data.scores.ai],
-                ['Conversion & UX', data.scores.ux],
-                ['Buyer Psychology', data.scores.psych],
-                ['Competitor Intelligence', data.scores.competitor],
-                ['Overall Health', data.scores.overall],
-            ].forEach(([label, val]) => {
-                ensureSpace(24);
-                doc.setFont('helvetica', 'normal');
-                doc.setFontSize(11);
-                doc.setTextColor(...C.navy);
-                doc.text(label, margin, y);
-                const display = val != null ? `${val}/100` : '—';
-                doc.setFont('helvetica', 'bold');
-                doc.setTextColor(...C.indigo);
-                doc.text(display, pageW - margin - doc.getTextWidth(display), y);
-                doc.setDrawColor(226, 232, 240);
-                doc.setLineWidth(0.5);
-                doc.line(margin, y + 8, pageW - margin, y + 8);
-                y += 26;
-            });
-            y += 8;
-
-            sectionTitle('Audit Reliability');
-            bulletList(data.reliabilityLines);
-
-            if (data.topIssues.length) {
-                sectionTitle('Top Issues');
-                bulletList(data.topIssues, { color: C.red });
-            }
-
-            if (data.recommendations.length) {
-                sectionTitle('Top Recommendations');
-                bulletList(data.recommendations, { color: C.emerald });
-            }
-
-            sectionTitle('Competitor Intelligence');
-            if (data.competitorSummary.unavailable) {
-                bodyText(`Competitor comparison unavailable — ${data.competitorSummary.unavailableReason || 'insufficient confidence or data'}. Extraction confidence: ${data.competitorSummary.extractionConfidencePct ?? '—'}%.`);
-            } else {
-            bodyText(`Data source: ${String(data.competitorSummary.dataSource).replace(/_/g, ' ')} · ${data.competitorSummary.trustReason}`);
-            if (data.competitorSummary.competitorsAnalyzed.length) {
-                bodyText(`Competitors analyzed: ${data.competitorSummary.competitorsAnalyzed.join(', ')}`, { bold: true, gap: 4 });
-            }
-            const mp = data.competitorSummary.positioning;
-            if (mp && Object.keys(mp).length) {
-                bodyText([
-                    mp.price_tier && `Price tier: ${mp.price_tier}`,
-                    mp.target_segment && `Target segment: ${mp.target_segment}`,
-                    mp.differentiation && `Differentiation: ${mp.differentiation}`,
-                ].filter(Boolean).join('\n'));
-            }
-            if (data.competitorSummary.gaps.length) {
-                bodyText('Your gaps vs competitors:', { bold: true, gap: 2 });
-                bulletList(data.competitorSummary.gaps);
-            }
-            if (data.competitorSummary.winningPatterns.length) {
-                bodyText('Winning patterns in your category:', { bold: true, gap: 2 });
-                bulletList(data.competitorSummary.winningPatterns);
-            }
-            if (data.competitorSummary.opportunities.length) {
-                bodyText('Opportunities:', { bold: true, gap: 2 });
-                bulletList(data.competitorSummary.opportunities);
-            }
-            }
-
-            if (data.autofixItems.length) {
-                sectionTitle('AutoFix Suggestions');
-                data.autofixItems.forEach((item) => {
-                    bodyText(item.label, { bold: true, size: 10, gap: 2 });
-                    bodyText(item.text, { size: 9, gap: 10 });
-                });
-            }
-
-            if (data.tabDetails?.seo?.length) {
-                sectionTitle('Google Ranking — Full Detail');
-                bulletList(data.tabDetails.seo);
-            }
-            if (data.tabDetails?.aeo?.length) {
-                sectionTitle('AI Visibility — Full Detail');
-                bulletList(data.tabDetails.aeo);
-            }
-            if (data.tabDetails?.ux?.length) {
-                sectionTitle('Conversion & UX — Full Detail');
-                bulletList(data.tabDetails.ux);
-            }
-            if (data.tabDetails?.psychology?.length) {
-                sectionTitle('Buyer Psychology — Full Detail');
-                bulletList(data.tabDetails.psychology);
-            }
-            if (data.tabDetails?.content?.length) {
-                sectionTitle('Content Studio — Full Detail');
-                bulletList(data.tabDetails.content);
-            }
-
-            const pageCount = doc.internal.getNumberOfPages();
-            for (let i = 1; i <= pageCount; i++) {
-                doc.setPage(i);
-                doc.setFont('helvetica', 'normal');
-                doc.setFontSize(8);
-                doc.setTextColor(148, 163, 184);
-                doc.text(BRAND_NAME, margin, pageH - 22);
-                doc.text(`Page ${i} of ${pageCount}`, pageW - margin - 52, pageH - 22);
-                if (i > 1 && data.url) {
-                    const shortUrl = data.url.length > 72 ? `${data.url.slice(0, 69)}…` : data.url;
-                    doc.text(shortUrl, margin + 88, pageH - 22);
-                }
-            }
-
-            const slug = (() => {
-                try {
-                    return new URL(data.url.startsWith('http') ? data.url : `https://${data.url}`).hostname.replace(/\./g, '-');
-                } catch {
-                    return 'report';
-                }
-            })();
-            doc.save(`commerce-copilot-${slug}-${data.generatedAt.toISOString().slice(0, 10)}.pdf`);
         }
 
         function BrandLogo({ className = 'w-5 h-5' }) {
@@ -2113,8 +1947,11 @@
                 }
                 try {
                     showToast('Generating PDF…');
-                    downloadCommerceReportPdf(normalizeMode1Result(mode1Result));
-                    showToast('PDF downloaded');
+                    const exportResult = downloadCommerceReportPdf(normalizeMode1Result(mode1Result), checkGlossary);
+                    window.__PDF_PARITY_REPORT__ = exportResult?.parity;
+                    console.log('PDF Parity Report', exportResult?.parity);
+                    const cov = exportResult?.parity?.coveragePct;
+                    showToast(cov != null ? `PDF downloaded (${cov}% UI parity)` : 'PDF downloaded');
                 } catch (err) {
                     showToast(`PDF export failed: ${err.message}`);
                 }
@@ -2252,24 +2089,22 @@
                 }
             };
 
-            useEffect(() => {
-                if (view === 'HISTORY') loadHistory();
-            }, [view]);
-
             const openHistoryReport = async (id) => {
                 setHistoryOpening(id);
                 try {
                     const data = await apiFetch(`/api/v1/reports/analysis/${id}`);
+                    const normalized = normalizeMode1Result(data);
+                    const gateFail = resolveScrapeGateFailure(normalized);
                     const hasData = data.seo_report && Object.keys(data.seo_report).length > 0;
                     if (data.status === 'running' || (!hasData && data.status !== 'failed')) {
                         showToast('This audit did not finish saving. Please run the analysis again for full results.');
                     }
-                    if (data.status === 'failed') {
+                    if (data.status === 'failed' && !gateFail) {
                         showToast(data.errors?.[0] || 'This audit failed. Please try again.');
                     }
-                    setMode1Result(normalizeMode1Result(data));
+                    setMode1Result(normalized);
                     setUrlInput(data.source_url || '');
-                    setReportTab('SEO');
+                    setReportTab(gateFail ? 'STOPPED' : 'SEO');
                     setView('REPORT_MODE1');
                     window.history.replaceState({ reportTab: 'SEO' }, '', `${window.location.pathname}${window.location.search}#tab=SEO`);
                 } catch (e) {
@@ -2376,10 +2211,16 @@
                             }
                         }
                     );
-                    setMode1Result(normalizeMode1Result(result));
-                    setReportTab('SEO');
+                    const normalized = normalizeMode1Result(result);
+                    const gateFail = resolveScrapeGateFailure(normalized);
+                    setMode1Result(normalized);
+                    setReportTab(gateFail ? 'STOPPED' : 'SEO');
                     setView('REPORT_MODE1');
-                    window.history.replaceState({ reportTab: 'SEO' }, '', `${window.location.pathname}${window.location.search}#tab=SEO`);
+                    if (!gateFail) {
+                        window.history.replaceState({ reportTab: 'SEO' }, '', `${window.location.pathname}${window.location.search}#tab=SEO`);
+                    } else {
+                        window.history.replaceState({ reportTab: 'STOPPED' }, '', `${window.location.pathname}${window.location.search}`);
+                    }
                     loadHistory();
                 } catch (err) {
                     showToast(`Analysis failed: ${err.message}`);
@@ -2506,6 +2347,8 @@
             const seoRpt    = mode1Result?.seo_report    || {};
             const autofixRpt = mode1Result?.autofix_report || {};
             const contentRpt = mode1Result?.generated_content || {};
+            const pageTitle = resolvePageTitle(mode1Result);
+            const fixTitleResolved = getValidatedAutofixFix(autofixRpt, 'fixed_title_tag');
 
             const mode1ProductData = mode1Result?.json_structured_data
                 || (mode1Result?.agent_reports || []).find(r => r.agent === 'extractor_agent')?.output
@@ -2742,16 +2585,30 @@
 
                     {checkDetail && (() => {
                         const rawEntry = checkGlossary[checkDetail.checkId] || {};
-                        const passed = Boolean(checkDetail.val);
+                        const auditPayload = mode1Result ? resolveAuditEvidence(checkDetail.checkId, mode1Result) : null;
+                        const canonicalVal = resolveCheckValue(checkDetail.checkId, mode1Result);
+                        const resolvedVal = canonicalVal !== undefined ? canonicalVal : checkDetail.val;
+                        const passed = auditPayload?.status
+                            ? auditPayload.status === 'pass'
+                            : Boolean(resolvedVal);
                         const entry = mode1Result
                             ? personalizeGlossaryEntry(rawEntry, checkDetail.checkId, passed)
                             : rawEntry;
                         const previewUrl = mode1Result?.source_url || urlInput || '';
                         const pageLoc = getCheckPageLocation(checkDetail.checkId);
+                        const evidence = auditPayload?.evidence;
                         const detectedVal = mode1Result ? getDetectedValueForCheck(checkDetail.checkId, mode1Result) : null;
                         const humanEvidence = mode1Result ? formatHumanEvidence(checkDetail.checkId, detectedVal, mode1Result) : null;
                         const visualUx = mode1Result?.audit_reliability?.visual_ux_facts || {};
-                        const showCheckImage = previewUrl && mode1Result && shouldShowCheckImage(checkDetail.checkId, mode1Result);
+                        const isVisualEvidence = evidence?.type === 'visual';
+                        const showScreenshot = isVisualEvidence && previewUrl && (
+                            evidence?.bound_key && visualUx?.element_bounds?.[evidence.bound_key]
+                            || shouldShowCheckImage(checkDetail.checkId, mode1Result)
+                        );
+                        const findingText = auditPayload?.finding || (passed ? entry.ok : entry.fail) || checkDetail.label;
+                        const explanationText = auditPayload?.explanation || entry.meaning || 'Definition loading...';
+                        const fixText = auditPayload?.fix_recommendation || entry.fix || 'Check the AutoFix tab for ready-made copy and code.';
+                        const hasEvidence = Boolean(auditPayload?.has_evidence || humanEvidence || detectedVal);
                         return (
                             <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 modal-backdrop" onClick={closeCheckDetail} role="dialog" aria-modal="true">
                                 <div className="bg-white/95 backdrop-blur-xl rounded-2xl modal-panel max-w-2xl w-full max-h-[90vh] overflow-y-auto border border-white/40 shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -2763,7 +2620,7 @@
                                             <div>
                                                 <h3 className="text-lg font-bold text-slate-900">{checkDetail.label}</h3>
                                                 <p className={`text-sm font-medium mt-0.5 ${passed ? 'text-emerald-700' : 'text-red-700'}`}>
-                                                    {passed ? '✅ Looking good' : '❌ Needs attention'}
+                                                    {passed ? 'Pass' : 'Needs attention'}
                                                 </p>
                                             </div>
                                         </div>
@@ -2772,66 +2629,60 @@
                                         </button>
                                     </div>
                                     <div className="p-6 space-y-5">
+                                        {!hasEvidence && (
+                                            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                                                Evidence is still loading for this check. Re-run the audit or open SEO/AEO tabs for detail.
+                                            </div>
+                                        )}
                                         <div>
-                                            <p className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">Why this matters</p>
-                                            <p className="text-sm text-slate-700 leading-relaxed">{entry.meaning || 'Definition loading...'}</p>
+                                            <p className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">1. Finding</p>
+                                            <p className={`text-sm leading-relaxed font-medium ${passed ? 'text-emerald-800' : 'text-red-800'}`}>{findingText}</p>
                                         </div>
                                         <div>
-                                            <p className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">What we found</p>
-                                            <p className={`text-sm leading-relaxed ${passed ? 'text-emerald-800' : 'text-red-800'}`}>
-                                                {passed ? (entry.ok || 'This looks good on your page.') : (entry.fail || 'This needs attention on your page.')}
-                                            </p>
-                                            {humanEvidence && (
-                                                <div className="mt-3 p-3 rounded-xl bg-slate-50 border border-slate-200">
+                                            <p className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">2. Evidence</p>
+                                            {evidence ? (
+                                                <HowWeDetectedBlock evidence={evidence} />
+                                            ) : humanEvidence ? (
+                                                <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
                                                     <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-1">{humanEvidence.label}</p>
                                                     <p className="text-sm text-slate-800 font-medium leading-relaxed">{humanEvidence.value}</p>
-                                                    {humanEvidence.technical && humanEvidence.technical !== humanEvidence.value && (
-                                                        <details className="mt-3 group">
-                                                            <summary className="text-xs font-semibold text-indigo-600 cursor-pointer list-none flex items-center gap-1">
-                                                                <i className="ph ph-code"></i> View Technical Evidence
-                                                                <i className="ph ph-caret-down text-[10px] group-open:rotate-180 transition-transform"></i>
-                                                            </summary>
-                                                            <pre className="text-xs font-mono code-block-premium text-emerald-400 p-3 rounded-lg overflow-x-auto mt-2">
-                                                                <code>{humanEvidence.technical}</code>
-                                                            </pre>
-                                                        </details>
+                                                </div>
+                                            ) : (
+                                                <p className="text-sm text-slate-500">No structured evidence available.</p>
+                                            )}
+                                        </div>
+                                        {(evidence?.highlight_region || pageLoc.zone) && (
+                                            <div>
+                                                <p className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">3. Highlight region</p>
+                                                <p className="text-sm text-slate-700">{evidence?.highlight_region || pageLoc.zone}</p>
+                                                {pageLoc.hint && <p className="text-xs text-slate-500 mt-1">{pageLoc.hint}</p>}
+                                            </div>
+                                        )}
+                                        <div>
+                                            <p className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">
+                                                {showScreenshot ? '4. Screenshot' : '4. Visual proof'}
+                                            </p>
+                                            {showScreenshot ? (
+                                                <CheckSitePreview url={previewUrl} checkId={checkDetail.checkId} passed={passed} visualUx={visualUx} evidence={auditPayload} />
+                                            ) : (
+                                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                                                    <p>No page screenshot applies — this check uses extracted HTML/text signals.</p>
+                                                    {evidence?.visual_metrics?.packshot != null && (
+                                                        <p className="mt-2 text-xs font-medium text-slate-800">
+                                                            Gallery classification — Packshot: {evidence.visual_metrics.packshot}, Lifestyle: {evidence.visual_metrics.lifestyle}
+                                                        </p>
                                                     )}
                                                 </div>
                                             )}
                                         </div>
                                         <div>
-                                            <p className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">
-                                                {showCheckImage ? 'Where on your page' : 'How to verify on your site'}
-                                            </p>
-                                            <p className="text-sm text-slate-600 mb-3">{pageLoc.hint}</p>
-                                            {showCheckImage && (
-                                                <CheckSitePreview url={previewUrl} checkId={checkDetail.checkId} passed={passed} visualUx={visualUx} />
-                                            )}
-                                            {!showCheckImage && (
-                                                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm text-slate-700 space-y-2">
-                                                    <p><i className="ph ph-text-align-left text-slate-500 mr-1"></i>
-                                                        This check is <strong>not shown on one screen zone</strong> (it may be in HTML source, Google results, or spread across the page).
-                                                    </p>
-                                                    {humanEvidence ? (
-                                                        <p className="text-xs text-slate-600">See <strong>What we found</strong> above for what we detected on your site.</p>
-                                                    ) : (
-                                                        <p className="text-xs text-slate-600">Read <strong>What we found</strong> and <strong>How to fix it</strong> below — or open the SEO / AI Visibility tab for full detail.</p>
-                                                    )}
-                                                </div>
-                                            )}
+                                            <p className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">5. Explanation</p>
+                                            <p className="text-sm text-slate-700 leading-relaxed">{explanationText}</p>
                                         </div>
-                                        {!passed && (
-                                            <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4">
-                                                <p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-2">How to fix it</p>
-                                                <p className="text-sm text-indigo-900 leading-relaxed">{entry.fix || 'Check the AutoFix tab for ready-made copy and code.'}</p>
-                                            </div>
-                                        )}
-                                        {passed && entry.fix && (
-                                            <div className="bg-slate-50 border border-slate-100 rounded-xl p-4">
-                                                <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Tip to keep it strong</p>
-                                                <p className="text-sm text-slate-600 leading-relaxed">{entry.fix}</p>
-                                            </div>
-                                        )}
+                                        <div className={`rounded-xl p-4 border ${passed ? 'bg-slate-50 border-slate-100' : 'bg-indigo-50 border-indigo-100'}`}>
+                                            <p className="text-xs font-bold text-indigo-600 uppercase tracking-wide mb-2">6. Fix recommendation</p>
+                                            <p className="text-sm text-indigo-900 leading-relaxed">{fixText}</p>
+                                        </div>
                                     </div>
                                     <div className="px-6 py-4 border-t border-slate-100 flex flex-wrap justify-end gap-2">
                                         {previewUrl && (
@@ -3388,6 +3239,8 @@
                                 const frontendVal   = mode1Result?.frontend_validation || reliability.frontend_validation || {};
                                 const visualUx      = reliability.visual_ux_facts || {};
                                 const fixTitle = getValidatedAutofixFix(autofixRpt, 'fixed_title_tag');
+                                const resolvedTitleBlock = resolveTitleTagBlock(mode1Result);
+                                const pageTitle = resolvedTitleBlock.value || '';
                                 const fixMeta = getValidatedAutofixFix(autofixRpt, 'fixed_meta_description');
                                 const fixH1 = getValidatedAutofixFix(autofixRpt, 'fixed_h1');
 
@@ -3419,7 +3272,17 @@
                                 };
 
                                 const ProgressBar = ({ score, max = 10, showLabel = true }) => {
-                                    const num = Number(score) || 0;
+                                    if (score == null || score === '') {
+                                        return showLabel
+                                            ? <div className="text-xs text-slate-400 font-medium">— / {max}</div>
+                                            : <div className="w-full bg-slate-100 rounded-full h-2" />;
+                                    }
+                                    const num = Number(score);
+                                    if (Number.isNaN(num)) {
+                                        return showLabel
+                                            ? <div className="text-xs text-slate-400 font-medium">— / {max}</div>
+                                            : <div className="w-full bg-slate-100 rounded-full h-2" />;
+                                    }
                                     const pct = Math.min((num / max) * 100, 100);
                                     const colorClass = num < 4 ? 'bg-red-500' : num < 7 ? 'bg-amber-500' : 'bg-emerald-500';
                                     return (
@@ -3432,22 +3295,34 @@
                                     );
                                 };
 
-                                const ScoreGauge = ({ value, max = 100, size = 168 }) => {
-                                    const num = Math.min(Math.max(Number(value) || 0, 0), max);
-                                    const pct = num / max;
+                                const ScoreGauge = ({ value, max = 100, size = 168, emptyLabel = 'N/A' }) => {
+                                    const isEmpty = value == null || value === '' || value === '--';
+                                    const num = isEmpty ? null : Math.min(Math.max(Number(value) || 0, 0), max);
+                                    const pct = num != null ? num / max : 0;
                                     const r = 58;
                                     const circ = 2 * Math.PI * r;
                                     const offset = circ * (1 - pct);
-                                    const stroke = pct < 0.4 ? '#ef4444' : pct < 0.7 ? '#f59e0b' : '#10b981';
+                                    const stroke = num == null ? '#94a3b8' : pct < 0.4 ? '#ef4444' : pct < 0.7 ? '#f59e0b' : '#10b981';
                                     return (
                                         <div className="relative inline-flex items-center justify-center" style={{ width: size, height: size }}>
                                             <svg width={size} height={size} className="-rotate-90">
                                                 <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#f1f5f9" strokeWidth="14" />
-                                                <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={stroke} strokeWidth="14" strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round" />
+                                                {num != null && (
+                                                    <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={stroke} strokeWidth="14" strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round" />
+                                                )}
                                             </svg>
                                             <div className="absolute text-center">
-                                                <div className="text-5xl font-black leading-none" style={{ color: stroke }}>{Math.round(num)}</div>
-                                                <div className="text-xs text-slate-400 mt-1 font-medium">out of {max}</div>
+                                                {num != null ? (
+                                                    <>
+                                                        <div className="text-5xl font-black leading-none" style={{ color: stroke }}>{Math.round(num)}</div>
+                                                        <div className="text-xs text-slate-400 mt-1 font-medium">out of {max}</div>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <div className="text-2xl font-bold text-slate-400 leading-none">{emptyLabel}</div>
+                                                        <div className="text-xs text-slate-400 mt-1 font-medium">no data</div>
+                                                    </>
+                                                )}
                                             </div>
                                         </div>
                                     );
@@ -3554,7 +3429,16 @@
                                 };
 
                                 const CategoryScore = ({ label, score, icon }) => {
-                                    const num = Number(score) || 0;
+                                    if (score == null || score === '') {
+                                        return (
+                                            <div className="border rounded-xl p-4 text-center border-slate-200 bg-slate-50 text-slate-400">
+                                                {icon && <i className={`ph ${icon} text-2xl mb-2 block opacity-40`}></i>}
+                                                <p className="text-2xl font-black">—</p>
+                                                <p className="text-xs font-bold uppercase tracking-wide mt-1 opacity-80">{label}</p>
+                                            </div>
+                                        );
+                                    }
+                                    const num = Number(score);
                                     const color = num < 4 ? 'text-red-600 bg-red-50 border-red-100' : num < 7 ? 'text-amber-600 bg-amber-50 border-amber-100' : 'text-emerald-600 bg-emerald-50 border-emerald-100';
                                     return (
                                         <div className={`border rounded-xl p-4 text-center ${color}`}>
@@ -3621,11 +3505,13 @@
                                 const CheckBadge = ({ val, checkId, label }) => {
                                     const entry = checkGlossary[checkId];
                                     const displayLabel = label || entry?.term || checkId;
-                                    const passed = Boolean(val);
+                                    const canonical = resolveCheckValue(checkId, mode1Result);
+                                    const resolvedVal = canonical !== undefined ? canonical : val;
+                                    const passed = Boolean(resolvedVal);
                                     return (
                                         <button
                                             type="button"
-                                            onClick={() => openCheckDetail({ checkId, val, label: displayLabel })}
+                                            onClick={() => openCheckDetail({ checkId, val: resolvedVal, label: displayLabel })}
                                             className={`inline-flex items-center gap-1.5 py-1 px-2 -mx-1 rounded-md cursor-pointer transition text-left w-full group ${passed ? 'hover:bg-emerald-50' : 'hover:bg-red-50'}`}
                                             title="Click to see meaning & fix"
                                         >
@@ -3662,6 +3548,59 @@
                                 const auditPageType = reliability.page_type || reliability.detected_page_type || competitorRpt.live_compare?.compare_page_type || '';
                                 const isNonPdpPage = ['homepage', 'saas_landing', 'blog', 'landing'].includes(String(auditPageType).toLowerCase());
                                 const sourceUrl = mode1Result?.source_url || '';
+                                const scrapeGateFail = resolveScrapeGateFailure(mode1Result);
+
+                                if (scrapeGateFail) {
+                                    const gateCode = scrapeGateFail.code || 'unknown';
+                                    const reasonLabel = getScrapeGateReasonLabel(gateCode);
+                                    const gateDescription = getScrapeGateDescription(gateCode, scrapeGateFail);
+                                    const stoppedUrl = sourceUrl || urlInput || '';
+                                    return (
+                                        <div className="report-view fade-in-report max-w-2xl mx-auto py-6 md:py-10">
+                                            <div className="rounded-2xl border-2 border-red-200 bg-gradient-to-br from-red-50 via-white to-white p-6 md:p-8 shadow-lg shadow-red-100/50">
+                                                <div className="flex items-start gap-4">
+                                                    <div className="w-12 h-12 rounded-xl bg-red-100 text-red-600 flex items-center justify-center shrink-0 text-xl font-bold" aria-hidden="true">✕</div>
+                                                    <div className="flex-1 min-w-0">
+                                                        <h2 className="text-2xl font-bold text-red-900">Analysis Stopped</h2>
+                                                        {stoppedUrl && (
+                                                            <p className="text-sm text-slate-500 mt-1 truncate" title={stoppedUrl}>{stoppedUrl}</p>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                <div className="mt-6 space-y-4">
+                                                    <div className="rounded-xl border border-red-100 bg-white/80 p-4">
+                                                        <p className="text-xs font-bold uppercase tracking-wide text-red-700 mb-1">Reason</p>
+                                                        <p className="text-lg font-semibold text-slate-900">{reasonLabel}</p>
+                                                        <p className="text-sm text-slate-600 mt-2 leading-relaxed">{gateDescription}</p>
+                                                    </div>
+                                                    <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50/80 p-4">
+                                                        <i className="ph ph-robot text-slate-400 text-xl shrink-0 mt-0.5"></i>
+                                                        <p className="text-sm text-slate-600 leading-relaxed">
+                                                            <span className="font-semibold text-slate-800">No AI analysis was executed.</span>
+                                                            {' '}The pipeline stopped after scraping because this page is not a valid audit target. SEO, UX, competitor, and fix recommendations were not generated.
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div className="mt-6 flex flex-wrap gap-3">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => { setView('HOME'); setTimeout(scrollToAudit, 100); }}
+                                                    className="btn-premium gradient-accent-animated text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-indigo-500/25"
+                                                >
+                                                    <i className="ph ph-arrow-counter-clockwise"></i> Try another URL
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setView('HISTORY')}
+                                                    className="px-6 py-3 border border-slate-300 bg-white rounded-xl font-medium hover:bg-slate-50 text-slate-700"
+                                                >
+                                                    View history
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                }
 
                                 return (
                                     <div className="report-view">
@@ -3823,7 +3762,17 @@
                                                                     {rows.map((row, ri) => (
                                                                         <tr key={ri} className="border-b last:border-0 hover:bg-slate-50/50">
                                                                             <td className="p-3 font-medium text-slate-800">
-                                                                                <div>{row.label}</div>
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => openCheckDetail({ checkId: `competitor_${row.key}`, val: row.you_win, label: row.label })}
+                                                                                    className="text-left group w-full"
+                                                                                    title="View evidence for this comparison"
+                                                                                >
+                                                                                    <div className="flex items-center gap-1">
+                                                                                        <span className="underline decoration-dotted decoration-slate-300 group-hover:decoration-indigo-500">{row.label}</span>
+                                                                                        <i className="ph ph-magnifying-glass text-slate-300 group-hover:text-indigo-500 text-xs"></i>
+                                                                                    </div>
+                                                                                </button>
                                                                                 {COMPARE_METRIC_HELP[row.key] && (
                                                                                     <p className="text-[10px] text-slate-400 font-normal mt-0.5 max-w-xs">{COMPARE_METRIC_HELP[row.key]}</p>
                                                                                 )}
@@ -3877,14 +3826,14 @@
                                                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                                                         <div className="flex flex-col items-center justify-center p-6 bg-white rounded-xl border border-slate-200 shadow-sm">
                                                             <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Google Ranking Score</p>
-                                                            <ScoreGauge value={seoScore === '--' ? 0 : Number(seoScore)} max={100} size={140} />
+                                                            <ScoreGauge value={seoScore === '--' ? null : Number(seoScore)} max={100} size={140} />
                                                         </div>
                                                         <div className="lg:col-span-2">
                                                             <SectionCard title="Google Search Preview" icon="ph-google-logo" rightElement={<span className="text-xs text-slate-400">How shoppers see you in search</span>}>
                                                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                                                    <SerpPreview label="Current — on your site now" variant="current" title={seoRpt.title_tag?.value} url={analyzedUrl} description={seoRpt.meta_description?.value} />
+                                                                    <SerpPreview label="Current — on your site now" variant="current" title={pageTitle} url={analyzedUrl} description={seoRpt.meta_description?.value} />
                                                                     {fixTitle || fixMeta ? (
-                                                                        <SerpPreview label="After AutoFix — recommended" variant="fixed" title={fixTitle || seoRpt.title_tag?.value} url={analyzedUrl} description={fixMeta || seoRpt.meta_description?.value} />
+                                                                        <SerpPreview label="After AutoFix — recommended" variant="fixed" title={fixTitle || pageTitle} url={analyzedUrl} description={fixMeta || seoRpt.meta_description?.value} />
                                                                     ) : (
                                                                         <div className="border border-amber-200 bg-amber-50 rounded-xl p-4 text-sm text-amber-900">
                                                                             <p className="font-bold mb-1">No verified AutoFix change for SERP preview</p>
@@ -3898,10 +3847,10 @@
 
                                                     <div className="space-y-6">
                                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                                        <SectionCard title="Title Tag" rightElement={<span className="text-xs font-bold text-slate-400">Score: {seoRpt.title_tag?.score}/10</span>}>
-                                                            <p className="text-slate-800 font-medium mb-2">{seoRpt.title_tag?.value || '—'}</p>
-                                                            <p className="text-sm text-slate-500">Length: {seoRpt.title_tag?.length ?? '—'} chars</p>
-                                                            {(seoRpt.title_tag?.issues || []).map((iss, i) => <p key={i} className="text-xs text-red-500 mt-1">• {iss}</p>)}
+                                                        <SectionCard title="Title Tag" rightElement={<span className="text-xs font-bold text-slate-400">Score: {resolvedTitleBlock.score ?? seoRpt.title_tag?.score}/10</span>}>
+                                                            <p className="text-slate-800 font-medium mb-2">{pageTitle || '—'}</p>
+                                                            <p className="text-sm text-slate-500">Length: {resolvedTitleBlock.length ?? '—'} chars</p>
+                                                            {(resolvedTitleBlock.issues || seoRpt.title_tag?.issues || []).map((iss, i) => <p key={i} className="text-xs text-red-500 mt-1">• {iss}</p>)}
                                                         </SectionCard>
                                                         <SectionCard title="Meta Description" rightElement={<span className="text-xs font-bold text-slate-400">Score: {seoRpt.meta_description?.score}/10</span>}>
                                                             <p className="text-slate-800 text-sm mb-2">{seoRpt.meta_description?.value || '—'}</p>
@@ -4006,7 +3955,7 @@
                                                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                                                         <div className="flex flex-col items-center justify-center p-6 bg-white rounded-xl border border-slate-200 shadow-sm">
                                                             <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">AI Visibility Score</p>
-                                                            <ScoreGauge value={aiVisScore === '--' ? 0 : Number(aiVisScore)} max={100} size={140} />
+                                                            <ScoreGauge value={aiVisScore === '--' ? null : Number(aiVisScore)} max={100} size={140} />
                                                         </div>
                                                         <div className="lg:col-span-2">
                                                             <AiOverviewMock productName={productData.product_name} gaps={aeoRpt.gaps} queries={aeoRpt.top_ai_queries_missed} />
@@ -4105,7 +4054,7 @@
                                                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                                                         <div className="flex flex-col items-center justify-center p-6 bg-white rounded-xl border border-slate-200 shadow-sm">
                                                             <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Conversion Score</p>
-                                                            <ScoreGauge value={uxScore === '--' ? 0 : Number(uxScore)} max={100} size={140} />
+                                                            <ScoreGauge value={uxScore === '--' ? null : Number(uxScore)} max={100} size={140} />
                                                             <p className="text-xs text-slate-500 mt-3 text-center">Cart risk: <span className={`font-bold uppercase ${uxRpt.checkout_friction?.cart_abandonment_risk === 'high' ? 'text-red-600' : 'text-emerald-600'}`}>{uxRpt.checkout_friction?.cart_abandonment_risk || '—'}</span></p>
                                                         </div>
                                                         <div className="lg:col-span-2 grid grid-cols-3 gap-3">
@@ -4312,7 +4261,7 @@
                                                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                                                         <div className="flex flex-col items-center justify-center p-6 bg-white rounded-xl border border-slate-200 shadow-sm">
                                                             <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Psychology Score</p>
-                                                            <ScoreGauge value={psychScore === '--' ? 0 : Number(psychScore)} max={100} size={140} />
+                                                            <ScoreGauge value={psychScore === '--' ? null : Number(psychScore)} max={100} size={140} />
                                                             <p className="text-xs text-slate-500 mt-3">Behavior likelihood: <span className="font-bold uppercase text-indigo-600">{psychRpt.fogg_model?.behavior_likelihood || '—'}</span></p>
                                                         </div>
                                                         <div className="lg:col-span-2 grid grid-cols-3 gap-3">
@@ -4362,8 +4311,8 @@
                                                             <div className="flex flex-wrap gap-2 mb-3 text-xs">
                                                                 <CheckBadge val={psychRpt.pricing_psychology?.charm_pricing_used} checkId="price_charm" label="Charm pricing (₹999)" />
                                                                 <CheckBadge val={psychRpt.pricing_psychology?.anchor_price_present} checkId="price_anchor" label="Anchor price (was ₹X)" />
-                                                                <CheckBadge val={psychRpt.decoy_pricing_detected} checkId="decoy_pricing" label="Decoy pricing (good/better/best)" />
-                                                                <CheckBadge val={psychRpt.peak_end_rule_applied} checkId="peak_end_rule" label="Strong ending on page" />
+                                                                <CheckBadge val={psychRpt.pricing_psychology?.decoy_pricing_detected} checkId="decoy_pricing" label="Decoy pricing (good/better/best)" />
+                                                                <CheckBadge val={psychRpt.pricing_psychology?.peak_end_rule_applied} checkId="peak_end_rule" label="Strong ending on page" />
                                                             </div>
                                                             <p className="text-sm text-indigo-600 mb-2">{psychRpt.pricing_psychology?.suggestion}</p>
                                                             {psychRpt.pricing_psychology?.anchor_price_recommendation && <p className="text-xs bg-indigo-50 p-2 rounded text-indigo-800">{psychRpt.pricing_psychology.anchor_price_recommendation}</p>}
@@ -4441,14 +4390,14 @@
                                                     )}
 
                                                     <SectionCard title="Before vs After — Copy & Paste" icon="ph-arrows-left-right">
-                                                        <CompareFixRow label="Title Tag" current={seoRpt.title_tag?.value} fixed={fixTitle} />
+                                                        <CompareFixRow label="Title Tag" current={pageTitle} fixed={fixTitle} />
                                                         <CompareFixRow label="Meta Description" current={seoRpt.meta_description?.value} fixed={fixMeta} />
                                                         <CompareFixRow label="H1 Headline" current={seoRpt.h1?.value} fixed={fixH1} />
                                                     </SectionCard>
 
                                                     <SectionCard title="Google Search Preview" icon="ph-google-logo">
                                                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                                                            <SerpPreview label="Before" variant="current" title={seoRpt.title_tag?.value} url={analyzedUrl} description={seoRpt.meta_description?.value} />
+                                                            <SerpPreview label="Before" variant="current" title={pageTitle} url={analyzedUrl} description={seoRpt.meta_description?.value} />
                                                             {fixTitle || fixMeta ? (
                                                                 <SerpPreview label="After AutoFix" variant="fixed" title={fixTitle} url={analyzedUrl} description={fixMeta} />
                                                             ) : (
@@ -4599,7 +4548,7 @@
                                                     {(contentRpt.ab_test_variants?.title_variant_b || contentRpt.ab_test_variants?.cta_variant_b || contentRpt.ab_test_variants?.description_variant_b) && (
                                                         <SectionCard title="A/B Test Variants" icon="ph-test-tube">
                                                             <div className="space-y-4">
-                                                                <AbVariantCard label="Page Title" variantA={seoRpt.title_tag?.value || autofixRpt.fixed_title_tag} variantB={contentRpt.ab_test_variants?.title_variant_b} />
+                                                                <AbVariantCard label="Page Title" variantA={pageTitle || autofixRpt.fixed_title_tag} variantB={contentRpt.ab_test_variants?.title_variant_b} />
                                                                 <AbVariantCard label="Product Description" variantA={productData.description?.slice(0, 200)} variantB={contentRpt.ab_test_variants?.description_variant_b} />
                                                                 <AbVariantCard label="CTA Button" variantA={contentRpt.ab_test_variants?.cta_variant_a || 'Add to Cart'} variantB={contentRpt.ab_test_variants?.cta_variant_b} />
                                                             </div>
@@ -4748,7 +4697,7 @@
                                             <div className="w-3 h-3 rounded-full bg-yellow-400"></div>
                                             <div className="w-3 h-3 rounded-full bg-green-400"></div>
                                             <div className="ml-4 bg-white px-3 py-1 rounded text-xs text-slate-400 w-1/2 flex items-center gap-2 truncate">
-                                                <i className="ph ph-lock"></i> {mode1ProductCtx.url || urlInput || 'https://yourbrand.com/product'}
+                                                <i className="ph ph-lock"></i> {previewToggle === 'OPTIMIZED' && fixTitleResolved ? fixTitleResolved : (pageTitle || mode1ProductCtx.url || urlInput || 'https://yourbrand.com/product')}
                                             </div>
                                         </div>
                                         <div className="p-8 flex gap-8">
@@ -5103,5 +5052,6 @@
 
         bootstrap();
     </script>
+    <script src="pdf_parity.js"></script>
 </body>
 </html>

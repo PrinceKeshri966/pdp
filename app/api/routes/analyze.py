@@ -109,6 +109,8 @@ def _persist_mode1_report(report: AnalysisReport, final_state: dict) -> None:
     report.generated_content = final_state.get("generated_content") or {}
     jsd["_audit_reliability"] = final_state.get("audit_reliability") or {}
     jsd["_run_analytics"] = final_state.get("run_analytics") or {}
+    if final_state.get("scrape_validation"):
+        jsd["_scrape_validation"] = final_state["scrape_validation"]
     report.json_structured_data = jsd
     report.seo_score = report.seo_report.get("overall_seo_score")
     report.overall_health_score = report.final_diagnosis.get("overall_health_score")
@@ -117,7 +119,7 @@ def _persist_mode1_report(report: AnalysisReport, final_state: dict) -> None:
         (r.get("input_tokens", 0) or 0) + (r.get("output_tokens", 0) or 0)
         for r in final_state.get("agent_reports", [])
     ) or None
-    report.error_message = "; ".join(final_state.get("errors", [])) or None
+    report.error_message = "; ".join(str(e) for e in final_state.get("errors", []) if e) or None
     if report.status == "completed":
         report.completed_at = datetime.now(timezone.utc)
 
@@ -155,12 +157,21 @@ def _mode1_response(report: AnalysisReport, final_state: dict, url: str) -> Anal
         }
     )
     jsd = payload_state.get("json_structured_data") or report.json_structured_data or {}
+    bc = final_state.get("browser_capture") or {}
+    browser_summary = {
+        "lighthouse_available": bool((bc.get("lighthouse") or {}).get("available")),
+        "schema_types": (bc.get("schema_validation") or {}).get("detected_types", []),
+        "technical_issues": (bc.get("technical_crawl") or {}).get("issues", [])[:5],
+        "network_api_categories": list((bc.get("network_api_summary") or {}).keys()),
+    } if bc else {}
     return AnalyzePDPResponse(
         report_id=report.id,
         status=report.status,
         overall_health_score=report.overall_health_score,
         seo_score=report.seo_score,
         source_url=url,
+        scraper_method=final_state.get("scraper_method"),
+        browser_capture_summary=browser_summary,
         json_structured_data=report.json_structured_data,
         dom_technical_seo=_dom_from_state_or_report(final_state, report),
         seo_report=payload_state.get("seo_report") or report.seo_report,
@@ -175,6 +186,11 @@ def _mode1_response(report: AnalysisReport, final_state: dict, url: str) -> Anal
         run_analytics=jsd.get("_run_analytics") or final_state.get("run_analytics") or {},
         agent_reports=final_state.get("agent_reports", []),
         errors=final_state.get("errors", []),
+        scrape_validation=(
+            final_state.get("scrape_validation")
+            or (report.json_structured_data or {}).get("_scrape_validation")
+            or {}
+        ),
     )
 
 

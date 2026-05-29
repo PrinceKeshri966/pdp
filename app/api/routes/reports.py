@@ -3,6 +3,9 @@ app/api/routes/reports.py
 
 GET /reports – Fetch paginated history of both AnalysisReports and Blueprints
                for the authenticated user's tenant.
+
+List queries load summary columns only (no JSONB blobs / raw markdown) for
+sub-100ms responses on typical tenants.
 """
 from __future__ import annotations
 
@@ -27,6 +30,26 @@ from app.schemas.reports import (
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
+_REPORT_LIST_COLUMNS = (
+    AnalysisReport.id,
+    AnalysisReport.source_url,
+    AnalysisReport.status,
+    AnalysisReport.seo_score,
+    AnalysisReport.overall_health_score,
+    AnalysisReport.created_at,
+    AnalysisReport.completed_at,
+)
+
+_BLUEPRINT_LIST_COLUMNS = (
+    Blueprint.id,
+    Blueprint.title,
+    func.left(Blueprint.business_input, 512).label("business_input"),
+    Blueprint.status,
+    Blueprint.version,
+    Blueprint.created_at,
+    Blueprint.completed_at,
+)
+
 
 @router.get(
     "",
@@ -42,51 +65,65 @@ async def list_reports(
 ) -> ReportsListResponse:
     offset = (page - 1) * page_size
 
-    # ── AnalysisReports ───────────────────────────────────────────────────────
-    report_rows = await db.execute(
-        select(AnalysisReport)
-        .where(
-            AnalysisReport.tenant_id == tenant.id,
-            AnalysisReport.user_id == db_user.id,
-        )
-        .order_by(desc(AnalysisReport.created_at))
-        .offset(offset)
-        .limit(page_size)
+    report_filter = (
+        AnalysisReport.tenant_id == tenant.id,
+        AnalysisReport.user_id == db_user.id,
     )
-    reports = report_rows.scalars().all()
+    blueprint_filter = (
+        Blueprint.tenant_id == tenant.id,
+        Blueprint.user_id == db_user.id,
+    )
 
-    total_reports_row = await db.execute(
-        select(func.count()).select_from(AnalysisReport).where(
-            AnalysisReport.tenant_id == tenant.id,
-            AnalysisReport.user_id == db_user.id,
+    report_total_col = func.count(AnalysisReport.id).over().label("_total")
+    report_rows = (
+        await db.execute(
+            select(*_REPORT_LIST_COLUMNS, report_total_col)
+            .where(*report_filter)
+            .order_by(desc(AnalysisReport.created_at))
+            .offset(offset)
+            .limit(page_size)
         )
-    )
-    total_reports: int = total_reports_row.scalar_one()
+    ).all()
 
-    # ── Blueprints ────────────────────────────────────────────────────────────
-    blueprint_rows = await db.execute(
-        select(Blueprint)
-        .where(
-            Blueprint.tenant_id == tenant.id,
-            Blueprint.user_id == db_user.id,
+    blueprint_total_col = func.count(Blueprint.id).over().label("_total")
+    blueprint_rows = (
+        await db.execute(
+            select(*_BLUEPRINT_LIST_COLUMNS, blueprint_total_col)
+            .where(*blueprint_filter)
+            .order_by(desc(Blueprint.created_at))
+            .offset(offset)
+            .limit(page_size)
         )
-        .order_by(desc(Blueprint.created_at))
-        .offset(offset)
-        .limit(page_size)
-    )
-    blueprints = blueprint_rows.scalars().all()
+    ).all()
 
-    total_blueprints_row = await db.execute(
-        select(func.count()).select_from(Blueprint).where(
-            Blueprint.tenant_id == tenant.id,
-            Blueprint.user_id == db_user.id,
-        )
-    )
-    total_blueprints: int = total_blueprints_row.scalar_one()
+    total_reports = int(report_rows[0]._total) if report_rows else 0
+    total_blueprints = int(blueprint_rows[0]._total) if blueprint_rows else 0
 
     return ReportsListResponse(
-        analysis_reports=[AnalysisReportSummary.model_validate(r) for r in reports],
-        blueprints=[BlueprintSummary.model_validate(b) for b in blueprints],
+        analysis_reports=[
+            AnalysisReportSummary(
+                id=row.id,
+                source_url=row.source_url,
+                status=row.status,
+                seo_score=row.seo_score,
+                overall_health_score=row.overall_health_score,
+                created_at=row.created_at,
+                completed_at=row.completed_at,
+            )
+            for row in report_rows
+        ],
+        blueprints=[
+            BlueprintSummary(
+                id=row.id,
+                title=row.title,
+                business_input=row.business_input,
+                status=row.status,
+                version=row.version,
+                created_at=row.created_at,
+                completed_at=row.completed_at,
+            )
+            for row in blueprint_rows
+        ],
         total_analysis=total_reports,
         total_blueprints=total_blueprints,
     )

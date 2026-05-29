@@ -43,8 +43,10 @@ class AgentState(TypedDict, total=False):
     scraper_method: Optional[str]
     dom_technical_seo: Optional[dict[str, Any]]  # verified HTML facts from scraper pre-parse
     scrape_html: Optional[str]  # truncated HTML for link extraction (context router)
-    network_payloads: Optional[list[dict[str, Any]]]  # XHR/fetch JSON captured during Playwright PDP scrape
+    network_payloads: Optional[list[dict[str, Any]]]  # XHR/fetch JSON captured during Playwright scrape
     platform_info: Optional[dict[str, Any]]  # ecommerce platform detection + strategy hints
+    browser_capture: Optional[dict[str, Any]]  # unified browser artifacts (lighthouse, schema, technical crawl)
+    capture_confidence: Optional[float]  # overall browser capture confidence
     extraction_meta: Optional[dict[str, Any]]  # multi-strategy extraction diagnostics
     scrape_validation: Optional[dict[str, Any]]
     page_type_info: Optional[dict[str, Any]]

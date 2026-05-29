@@ -52,6 +52,12 @@ def _page_type_allows_field(field: str, page_type: str) -> bool:
     return True
 
 
+def _issue_text(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("issue") or item.get("text") or item.get("action") or item)
+    return str(item)
+
+
 def _field_supported_by_evidence(
     field: str,
     *,
@@ -59,7 +65,7 @@ def _field_supported_by_evidence(
     dom_facts: dict,
     structured: dict,
 ) -> bool:
-    seo_issues = " ".join(seo_report.get("top_issues") or []).lower()
+    seo_issues = " ".join(_issue_text(i) for i in (seo_report.get("top_issues") or [])).lower()
     if field == "fixed_title_tag":
         title = (seo_report.get("title_tag") or {}).get("value") or dom_facts.get("title_tag") or ""
         return bool(title) or bool(structured.get("product_name")) or "title" in seo_issues
@@ -276,7 +282,7 @@ def validate_autofix_report(
         action = (item.get("action") or "").strip()
         if not action or _GENERIC_NOOP.search(action):
             continue
-        if any(_similarity(action, iss) > 0.92 for iss in (seo_report.get("top_issues") or [])):
+        if any(_similarity(action, _issue_text(iss)) > 0.92 for iss in (seo_report.get("top_issues") or [])):
             if len(action) < 80:
                 continue
         plan_out.append(item)

@@ -92,6 +92,46 @@
             return { ...data, dom_technical_seo: dom, audit_reliability: auditRel, run_analytics: runAnalytics, frontend_validation: frontendValidation };
         }
 
+        function isBareHostnameTitle(title, url) {
+            const t = String(title || '').trim();
+            if (!t) return false;
+            const lower = t.toLowerCase().replace(/^www\./, '');
+            if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(lower)) return true;
+            try {
+                const raw = url && String(url).trim();
+                if (!raw) return false;
+                const u = new URL(raw.startsWith('http') ? raw : `https://${raw}`);
+                const host = u.hostname.replace(/^www\./, '').toLowerCase();
+                const hostBare = host.split('.')[0];
+                if (lower === host || lower === host.replace(/\./g, '') || lower === hostBare) return true;
+                if (t.length < 28 && (lower.includes(host) || lower === hostBare)) return true;
+            } catch { /* ignore */ }
+            return false;
+        }
+
+        function resolvePageTitle(result) {
+            if (!result) return '';
+            const dom = result.dom_technical_seo || {};
+            const seo = result.seo_report || {};
+            const jsd = result.json_structured_data || {};
+            const url = result.source_url || jsd.product_url || '';
+            const candidates = [dom.title_tag, seo.title_tag?.value, jsd.product_name, seo.h1?.value];
+            for (const c of candidates) {
+                if (!c || !String(c).trim()) continue;
+                const s = String(c).trim();
+                if (isBareHostnameTitle(s, url)) continue;
+                return s;
+            }
+            return '';
+        }
+
+        function resolveTitleTagBlock(result) {
+            const seo = result?.seo_report || {};
+            const base = seo.title_tag || {};
+            const value = resolvePageTitle(result);
+            return { ...base, value, length: value ? value.length : 0 };
+        }
+
         /** AutoFix fields that passed before/after validation (no identical no-op fixes). */
         function getValidatedAutofixFix(autofixRpt, field) {
             if (!autofixRpt) return null;
@@ -577,7 +617,7 @@
                 return '&lt;!-- VERIFIED: no h1 element in page DOM --&gt;';
             }
             if (checkId === 'kw_in_title') {
-                const t = dom.title_tag ?? seo.title_tag?.value;
+                const t = resolvePageTitle(result) || dom.title_tag;
                 if (t) return '&lt;title&gt;' + esc(t.slice(0, 120)) + '&lt;/title&gt;';
                 return '&lt;!-- VERIFIED: empty or missing title tag --&gt;';
             }
@@ -611,11 +651,11 @@
             const ux = result?.ux_report || {};
             const map = {
                 kw_in_h1: seo.h1?.value,
-                kw_in_title: seo.title_tag?.value,
+                kw_in_title: resolvePageTitle(result),
                 kw_in_meta: seo.meta_description?.value,
-                trust_reviews: ux.trust_signals?.has_reviews != null ? (ux.trust_signals.has_reviews ? 'Reviews found' : 'No reviews section') : null,
+                trust_reviews: ux.trust_signals?.reviews_present != null ? (ux.trust_signals.reviews_present ? 'Reviews found' : 'No reviews section') : null,
                 trust_rating: ux.trust_signals?.avg_rating != null ? `Rating: ${ux.trust_signals.avg_rating}` : null,
-                img_video: ux.media?.has_video != null ? (ux.media.has_video ? 'Video present' : 'No product video') : null,
+                img_video: ux.product_imagery?.video_present != null ? (ux.product_imagery.video_present ? 'Video present' : 'No product video') : null,
             };
             return map[checkId] || null;
         }
@@ -982,10 +1022,6 @@
                 }
             };
 
-            useEffect(() => {
-                if (view === 'HISTORY') loadHistory();
-            }, [view]);
-
             const openHistoryReport = async (id) => {
                 setHistoryOpening(id);
                 try {
@@ -1209,6 +1245,8 @@
             const seoRpt    = mode1Result?.seo_report    || {};
             const autofixRpt = mode1Result?.autofix_report || {};
             const contentRpt = mode1Result?.generated_content || {};
+            const pageTitle = resolvePageTitle(mode1Result);
+            const fixTitleResolved = getValidatedAutofixFix(autofixRpt, 'fixed_title_tag');
 
             const mode1ProductData = mode1Result?.json_structured_data
                 || (mode1Result?.agent_reports || []).find(r => r.agent === 'extractor_agent')?.output
@@ -1987,6 +2025,8 @@
                                 const frontendVal   = mode1Result?.frontend_validation || reliability.frontend_validation || {};
                                 const visualUx      = reliability.visual_ux_facts || {};
                                 const fixTitle = getValidatedAutofixFix(autofixRpt, 'fixed_title_tag');
+                                const resolvedTitleBlock = resolveTitleTagBlock(mode1Result);
+                                const pageTitleResolved = resolvedTitleBlock.value || '';
                                 const fixMeta = getValidatedAutofixFix(autofixRpt, 'fixed_meta_description');
                                 const fixH1 = getValidatedAutofixFix(autofixRpt, 'fixed_h1');
 
@@ -2608,9 +2648,9 @@
                                                         <div className="lg:col-span-2">
                                                             <SectionCard title="Google Search Preview" icon="ph-google-logo" rightElement={<span className="text-xs text-slate-400">How shoppers see you in search</span>}>
                                                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                                                    <SerpPreview label="Current — on your site now" variant="current" title={seoRpt.title_tag?.value} url={analyzedUrl} description={seoRpt.meta_description?.value} />
+                                                                    <SerpPreview label="Current — on your site now" variant="current" title={pageTitleResolved} url={analyzedUrl} description={seoRpt.meta_description?.value} />
                                                                     {fixTitle || fixMeta ? (
-                                                                        <SerpPreview label="After AutoFix — recommended" variant="fixed" title={fixTitle || seoRpt.title_tag?.value} url={analyzedUrl} description={fixMeta || seoRpt.meta_description?.value} />
+                                                                        <SerpPreview label="After AutoFix — recommended" variant="fixed" title={fixTitle || pageTitleResolved} url={analyzedUrl} description={fixMeta || seoRpt.meta_description?.value} />
                                                                     ) : (
                                                                         <div className="border border-amber-200 bg-amber-50 rounded-xl p-4 text-sm text-amber-900">
                                                                             <p className="font-bold mb-1">No verified AutoFix change for SERP preview</p>
@@ -2624,10 +2664,10 @@
 
                                                     <div className="space-y-6">
                                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                                        <SectionCard title="Title Tag" rightElement={<span className="text-xs font-bold text-slate-400">Score: {seoRpt.title_tag?.score}/10</span>}>
-                                                            <p className="text-slate-800 font-medium mb-2">{seoRpt.title_tag?.value || '—'}</p>
-                                                            <p className="text-sm text-slate-500">Length: {seoRpt.title_tag?.length ?? '—'} chars</p>
-                                                            {(seoRpt.title_tag?.issues || []).map((iss, i) => <p key={i} className="text-xs text-red-500 mt-1">• {iss}</p>)}
+                                                        <SectionCard title="Title Tag" rightElement={<span className="text-xs font-bold text-slate-400">Score: {resolvedTitleBlock.score ?? seoRpt.title_tag?.score}/10</span>}>
+                                                            <p className="text-slate-800 font-medium mb-2">{pageTitleResolved || '—'}</p>
+                                                            <p className="text-sm text-slate-500">Length: {resolvedTitleBlock.length ?? '—'} chars</p>
+                                                            {(resolvedTitleBlock.issues || seoRpt.title_tag?.issues || []).map((iss, i) => <p key={i} className="text-xs text-red-500 mt-1">• {iss}</p>)}
                                                         </SectionCard>
                                                         <SectionCard title="Meta Description" rightElement={<span className="text-xs font-bold text-slate-400">Score: {seoRpt.meta_description?.score}/10</span>}>
                                                             <p className="text-slate-800 text-sm mb-2">{seoRpt.meta_description?.value || '—'}</p>
@@ -3089,8 +3129,8 @@
                                                             <div className="flex flex-wrap gap-2 mb-3 text-xs">
                                                                 <CheckBadge val={psychRpt.pricing_psychology?.charm_pricing_used} checkId="price_charm" label="Charm pricing (₹999)" />
                                                                 <CheckBadge val={psychRpt.pricing_psychology?.anchor_price_present} checkId="price_anchor" label="Anchor price (was ₹X)" />
-                                                                <CheckBadge val={psychRpt.decoy_pricing_detected} checkId="decoy_pricing" label="Decoy pricing (good/better/best)" />
-                                                                <CheckBadge val={psychRpt.peak_end_rule_applied} checkId="peak_end_rule" label="Strong ending on page" />
+                                                                <CheckBadge val={psychRpt.pricing_psychology?.decoy_pricing_detected} checkId="decoy_pricing" label="Decoy pricing (good/better/best)" />
+                                                                <CheckBadge val={psychRpt.pricing_psychology?.peak_end_rule_applied} checkId="peak_end_rule" label="Strong ending on page" />
                                                             </div>
                                                             <p className="text-sm text-indigo-600 mb-2">{psychRpt.pricing_psychology?.suggestion}</p>
                                                             {psychRpt.pricing_psychology?.anchor_price_recommendation && <p className="text-xs bg-indigo-50 p-2 rounded text-indigo-800">{psychRpt.pricing_psychology.anchor_price_recommendation}</p>}
@@ -3168,14 +3208,14 @@
                                                     )}
 
                                                     <SectionCard title="Before vs After — Copy & Paste" icon="ph-arrows-left-right">
-                                                        <CompareFixRow label="Title Tag" current={seoRpt.title_tag?.value} fixed={fixTitle} />
+                                                        <CompareFixRow label="Title Tag" current={pageTitleResolved} fixed={fixTitle} />
                                                         <CompareFixRow label="Meta Description" current={seoRpt.meta_description?.value} fixed={fixMeta} />
                                                         <CompareFixRow label="H1 Headline" current={seoRpt.h1?.value} fixed={fixH1} />
                                                     </SectionCard>
 
                                                     <SectionCard title="Google Search Preview" icon="ph-google-logo">
                                                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                                                            <SerpPreview label="Before" variant="current" title={seoRpt.title_tag?.value} url={analyzedUrl} description={seoRpt.meta_description?.value} />
+                                                            <SerpPreview label="Before" variant="current" title={pageTitleResolved} url={analyzedUrl} description={seoRpt.meta_description?.value} />
                                                             {fixTitle || fixMeta ? (
                                                                 <SerpPreview label="After AutoFix" variant="fixed" title={fixTitle} url={analyzedUrl} description={fixMeta} />
                                                             ) : (
@@ -3314,7 +3354,7 @@
                                                     {(contentRpt.ab_test_variants?.title_variant_b || contentRpt.ab_test_variants?.cta_variant_b || contentRpt.ab_test_variants?.description_variant_b) && (
                                                         <SectionCard title="A/B Test Variants" icon="ph-test-tube">
                                                             <div className="space-y-4">
-                                                                <AbVariantCard label="Page Title" variantA={seoRpt.title_tag?.value || autofixRpt.fixed_title_tag} variantB={contentRpt.ab_test_variants?.title_variant_b} />
+                                                                <AbVariantCard label="Page Title" variantA={pageTitleResolved || autofixRpt.fixed_title_tag} variantB={contentRpt.ab_test_variants?.title_variant_b} />
                                                                 <AbVariantCard label="Product Description" variantA={productData.description?.slice(0, 200)} variantB={contentRpt.ab_test_variants?.description_variant_b} />
                                                                 <AbVariantCard label="CTA Button" variantA={contentRpt.ab_test_variants?.cta_variant_a || 'Add to Cart'} variantB={contentRpt.ab_test_variants?.cta_variant_b} />
                                                             </div>

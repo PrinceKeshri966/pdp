@@ -58,6 +58,8 @@ class AnalyzePDPResponse(BaseModel):
     json_structured_data: dict[str, Any] = {}
     dom_technical_seo: dict[str, Any] = {}
     source_url: str | None = None
+    scraper_method: str | None = None
+    browser_capture_summary: dict[str, Any] = {}
 
     # Reliability & observability
     audit_reliability: dict[str, Any] = {}
@@ -66,6 +68,7 @@ class AnalyzePDPResponse(BaseModel):
     # Meta
     agent_reports: list[dict[str, Any]] = []
     errors: list[str] = []
+    scrape_validation: dict[str, Any] = {}
 
 
 class GenerateContentRequest(BaseModel):

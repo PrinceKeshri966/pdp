@@ -58,29 +58,62 @@ Return ONLY valid JSON:
 """.strip()
 
 
-def merge_ux_report(facts: dict[str, Any], llm: dict[str, Any], *, page_type: str = "unknown") -> dict[str, Any]:
+def merge_ux_report(
+    facts: dict[str, Any],
+    llm: dict[str, Any],
+    *,
+    page_type: str = "unknown",
+    vision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     pdp_page = is_pdp(page_type)
     ctas = facts.get("cta_candidates") or []
     trust_n = len(facts.get("trust_badges") or [])
     trust_score = min(10.0, 4.0 + trust_n * 0.8) if trust_n else 3.0
 
+    vision = vision or {}
+    vision_available = bool(vision.get("available"))
+    cta_score = (llm.get("cta_analysis") or {}).get("score", 6.0)
+    layout_score = (llm.get("page_layout") or {}).get("score", 6.0)
+    mobile_score = 7.0 if facts.get("mobile_ux_hints") else 5.0
+
+    if vision_available:
+        cta_vis = float(vision.get("cta_visibility") or 0)
+        if cta_vis > 0:
+            cta_score = cta_score * 0.4 + cta_vis * 0.6
+        trust_vis = float(vision.get("trust_signals_visible") or 0)
+        if trust_vis > 0:
+            trust_score = trust_score * 0.4 + trust_vis * 0.6
+        hierarchy = float(vision.get("visual_hierarchy") or 0)
+        if hierarchy > 0:
+            layout_score = layout_score * 0.4 + hierarchy * 0.6
+        hero_clarity = float(vision.get("above_fold_clarity") or 0)
+        if hero_clarity > 0:
+            layout_score = layout_score * 0.7 + hero_clarity * 0.3
+        mobile_est = float(vision.get("mobile_readiness_estimate") or 0)
+        if mobile_est > 0:
+            mobile_score = mobile_score * 0.4 + mobile_est * 0.6
+
     return {
         "conversion_score": llm.get("conversion_score", 6.0),
+        "vision_ux_score": vision.get("overall_ux_score") if vision_available else None,
         "cta_analysis": {
             "found": facts.get("cta_count", 0) > 0,
             "above_fold": bool(facts.get("above_fold_cta")) or llm.get("cta_analysis", {}).get("above_fold", False),
-            "sticky_on_scroll": False,
+            "sticky_on_scroll": bool(facts.get("sticky_cta_detected")),
             "text_quality": (llm.get("cta_analysis") or {}).get("text_quality", "average"),
-            "color_contrast": "adequate",
+            "color_contrast": vision.get("color_contrast_risk", "adequate") if vision_available else "adequate",
             "multiple_ctas": facts.get("cta_count", 0) > 1,
-            "score": (llm.get("cta_analysis") or {}).get("score", 6.0),
+            "score": round(cta_score, 1),
+            "vision_verified": vision_available,
         },
         "product_imagery": {
             "multiple_angles": facts.get("images_count", 0) > 2,
-            "zoom_capability": False,
-            "lifestyle_images": False,
+            "zoom_capability": bool(facts.get("zoom_capability_detected")),
+            "lifestyle_images": int(facts.get("lifestyle_image_count") or 0) > 0,
             "video_present": facts.get("has_video", False),
             "image_count_adequate": facts.get("images_count", 0) >= 3,
+            "packshot_count": facts.get("packshot_count", 0),
+            "lifestyle_count": facts.get("lifestyle_image_count", 0),
             "score": min(10.0, facts.get("images_count", 0) * 1.5) if facts.get("images_count") else 4.0,
         },
         "trust_signals": {
@@ -98,20 +131,25 @@ def merge_ux_report(facts: dict[str, Any], llm: dict[str, Any], *, page_type: st
         "product_information": (
             {
                 "size_guide_present": facts.get("has_size_guide", False),
-                "material_composition": False,
+                "material_composition": bool(facts.get("material_composition_detected")),
                 "care_instructions": False,
-                "fit_description": False,
-                "specifications_table": False,
+                "fit_description": bool(facts.get("fit_description_detected")),
+                "specifications_table": bool(facts.get("specifications_table_detected")),
                 "score": 6.0 if facts.get("has_size_guide") else 4.0,
             }
             if pdp_page
             else {"applicable": False, "score": None, "note": "N/A for non-PDP page type"}
         ),
         "mobile_ux": {
-            "score": 7.0 if facts.get("mobile_ux_hints") else 5.0,
+            "score": round(mobile_score, 1),
             "issues": [] if facts.get("mobile_ux_hints") else ["No explicit mobile UX signals in content"],
+            "vision_verified": vision_available,
         },
-        "page_layout": llm.get("page_layout") or {"above_fold_content": "adequate", "visual_hierarchy": "adequate", "whitespace_usage": "adequate", "score": 6.0},
+        "page_layout": {
+            **(llm.get("page_layout") or {"above_fold_content": "adequate", "visual_hierarchy": "adequate", "whitespace_usage": "adequate", "score": 6.0}),
+            "score": round(layout_score, 1),
+            "vision_verified": vision_available,
+        },
         "storytelling": llm.get("storytelling") or {"has_brand_story": False, "has_lifestyle_content": False, "emotional_appeal": "weak", "score": 5.0},
         "urgency_scarcity": {
             "stock_counter": any("left" in u.lower() for u in facts.get("urgency_snippets") or []),
@@ -125,6 +163,7 @@ def merge_ux_report(facts: dict[str, Any], llm: dict[str, Any], *, page_type: st
         "conversion_blockers": llm.get("conversion_blockers") or [],
         "recommendations": llm.get("recommendations") or [],
         "page_type": page_type,
+        "vision_analysis": vision if vision_available else None,
         "_precomputed_facts": {k: v for k, v in facts.items() if not k.startswith("_")},
     }
 
@@ -140,6 +179,7 @@ async def ux_agent(state: AgentState) -> AgentState:
         page_contexts=state.get("page_contexts"),
         structured=structured,
         markdown=state.get("markdown_content") or "",
+        scrape_html=state.get("scrape_html") or "",
     )
 
     page_info = state_dict(state, "page_type_info")
@@ -170,18 +210,25 @@ Analyze conversion friction and CRO opportunities only."""
     if parse_err:
         return {"errors": [parse_err]}
 
-    ux_report = merge_ux_report(ux_facts, llm_layer, page_type=page_type)
+    visual = state_dict(state, "visual_ux_facts")
+    if not visual.get("vision_analysis"):
+        bc_visual = (state.get("browser_capture") or {}).get("visual_ux_facts") or {}
+        if bc_visual.get("vision_analysis"):
+            visual = {**visual, "vision_analysis": bc_visual["vision_analysis"]}
+    visual_ok = bool(visual.get("capture_ok"))
+
+    ux_report = merge_ux_report(ux_facts, llm_layer, page_type=page_type, vision=visual.get("vision_analysis"))
     for key in ("friction_points", "conversion_blockers", "recommendations"):
         filtered, flagged = filter_pdp_leakage(ux_report.get(key) or [], page_type)
         ux_report[key] = filtered
         if flagged:
             ux_report.setdefault("_leakage_filtered", []).extend(flagged)
 
-    visual = state_dict(state, "visual_ux_facts")
-    visual_ok = bool(visual.get("capture_ok"))
     if visual_ok:
         vis_cta = bool(visual.get("cta_above_fold"))
         ux_report["cta_analysis"]["above_fold"] = vis_cta
+        if visual.get("sticky_cta_detected") is not None:
+            ux_report["cta_analysis"]["sticky_on_scroll"] = bool(visual.get("sticky_cta_detected"))
         if not vis_cta and ux_report["cta_analysis"].get("above_fold"):
             ux_report["cta_analysis"]["score"] = min(
                 float(ux_report["cta_analysis"].get("score") or 6), 5.0

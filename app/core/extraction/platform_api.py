@@ -28,16 +28,100 @@ def _base_url(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
-def _normalize_shopify_price(raw_price: Any) -> str | None:
+def _normalize_shopify_price(raw_price: Any, *, in_cents: bool = True) -> str | None:
     if raw_price is None:
         return None
     try:
         pval = float(str(raw_price).replace(",", ""))
-        if pval >= 1000 and pval == int(pval):
+        if in_cents and pval >= 1000 and pval == int(pval):
             return str(int(pval / 100))
         return str(int(pval) if pval == int(pval) else round(pval, 2))
     except (TypeError, ValueError):
         return str(raw_price)
+
+
+def _parse_visible_discount_pct(text: str) -> int | None:
+    m = re.search(r"(\d{1,2})\s*%\s*off", text or "", re.I)
+    return int(m.group(1)) if m else None
+
+
+def _variant_picker_count(html: str) -> int | None:
+    """Count visible variant picker controls (ground-truth parity)."""
+    if not html:
+        return None
+    selectors = len(re.findall(
+        r'select[^>]*name=["\'][^"\']*option|class=["\'][^"\']*swatch|data-variant-id|'
+        r'class=["\'][^"\']*variant[^"\']*["\'][^>]*(?:button|input)',
+        html,
+        re.I,
+    ))
+    if selectors:
+        return selectors
+    opts = len(re.findall(r'class=["\'][^"\']*variant[^"\']*["\'][^>]*>.*?<option', html, re.I))
+    return opts or None
+
+
+def _map_shopify_variant(v: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a single Shopify variant to structured output."""
+    out: dict[str, Any] = {}
+    if v.get("id") is not None:
+        out["id"] = v["id"]
+    if v.get("title"):
+        out["title"] = str(v["title"]).strip()
+    if v.get("sku"):
+        out["sku"] = str(v["sku"]).strip()
+    raw_price = v.get("price")
+    norm = _normalize_shopify_price(raw_price)
+    if norm:
+        out["price"] = norm
+    cap = v.get("compare_at_price")
+    if cap is not None and str(cap) not in ("", "0", "0.0"):
+        norm_cap = _normalize_shopify_price(cap)
+        if norm_cap:
+            out["compare_at_price"] = norm_cap
+    inv = v.get("inventory_quantity")
+    if inv is not None:
+        try:
+            out["inventory_quantity"] = int(inv)
+        except (TypeError, ValueError):
+            pass
+    if "available" in v:
+        out["available"] = bool(v.get("available"))
+    for opt_key in ("option1", "option2", "option3"):
+        if v.get(opt_key):
+            out[opt_key] = str(v[opt_key]).strip()
+    return out
+
+
+def _shopify_collections(data: dict[str, Any]) -> list[str]:
+    """Derive collection labels from Shopify product payload."""
+    collections: list[str] = []
+    seen: set[str] = set()
+
+    def _add(val: str | None) -> None:
+        if not val:
+            return
+        label = str(val).strip()
+        if label and label.lower() not in seen:
+            seen.add(label.lower())
+            collections.append(label)
+
+    for coll in data.get("collections") or []:
+        if isinstance(coll, dict):
+            _add(coll.get("title") or coll.get("handle"))
+        elif isinstance(coll, str):
+            _add(coll)
+
+    _add(data.get("product_type") or data.get("type"))
+
+    tags = data.get("tags") or []
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",") if t.strip()]
+    for tag in tags:
+        if isinstance(tag, str) and tag.strip():
+            _add(tag.strip())
+
+    return collections[:20]
 
 
 def _map_shopify_product(data: dict[str, Any]) -> dict[str, Any]:
@@ -45,16 +129,66 @@ def _map_shopify_product(data: dict[str, Any]) -> dict[str, Any]:
     if data.get("title"):
         out["product_name"] = str(data["title"]).strip()
     if data.get("vendor"):
-        out["brand"] = str(data["vendor"]).strip()
-    variants = data.get("variants") or []
-    if variants and isinstance(variants[0], dict):
-        v0 = variants[0]
-        raw_price = v0.get("price")
-        norm = _normalize_shopify_price(raw_price)
-        if norm:
-            out["price"] = norm
+        vendor = str(data["vendor"]).strip()
+        out["vendor"] = vendor
+        out["brand"] = vendor
+
+    variants_raw = data.get("variants") or []
+    variants: list[dict[str, Any]] = []
+    total_inventory = 0
+    has_inventory = False
+    compare_prices: list[str] = []
+
+    for v in variants_raw:
+        if not isinstance(v, dict):
+            continue
+        mapped = _map_shopify_variant(v)
+        if mapped:
+            variants.append(mapped)
+        inv = mapped.get("inventory_quantity")
+        if inv is not None:
+            has_inventory = True
+            total_inventory += int(inv)
+        cap = mapped.get("compare_at_price")
+        if cap:
+            compare_prices.append(str(cap))
+
+    if variants:
+        out["variants"] = variants
+        prices = [v["price"] for v in variants if v.get("price")]
+        if prices:
+            try:
+                out["price"] = str(min(int(float(p)) for p in prices))
+            except (TypeError, ValueError):
+                out["price"] = variants[0].get("price")
+        compare_vals: list[float] = []
+        for v in variants:
+            cap = v.get("compare_at_price")
+            if cap:
+                try:
+                    compare_vals.append(float(str(cap).replace(",", "")))
+                except ValueError:
+                    pass
+        sale = None
+        try:
+            sale = float(str(out.get("price", "")).replace(",", ""))
+        except (TypeError, ValueError):
+            pass
+        max_compare = max(compare_vals) if compare_vals else None
+        if max_compare and sale and max_compare > sale * 1.02:
+            out["compare_at_price"] = str(int(max_compare) if max_compare == int(max_compare) else round(max_compare, 2))
+            out["original_price"] = out["compare_at_price"]
+            out["discount_pct"] = round((1 - sale / max_compare) * 100)
+        if has_inventory:
+            out["inventory_quantity"] = total_inventory
+        out["availability"] = "OutOfStock" if not any(v.get("available", True) for v in variants) else "InStock"
         out["currency"] = "INR"
-        out["availability"] = "OutOfStock" if not v0.get("available") else "InStock"
+
+    collections = _shopify_collections(data)
+    if collections:
+        out["collections"] = collections
+        out["categories"] = collections
+
     desc = data.get("description") or data.get("body_html")
     if desc:
         out["description"] = re.sub(r"<[^>]+>", " ", str(desc))[:3000]
@@ -69,6 +203,17 @@ def _map_shopify_product(data: dict[str, Any]) -> dict[str, Any]:
         if urls:
             out["image_urls"] = urls[:12]
             out["images_count"] = len(urls)
+
+    # Structured Shopify summary for downstream ecommerce analysis
+    out["shopify_product"] = {
+        "product_name": out.get("product_name"),
+        "vendor": out.get("vendor"),
+        "collections": out.get("collections") or [],
+        "variants": out.get("variants") or [],
+        "inventory_quantity": out.get("inventory_quantity"),
+        "price": out.get("price"),
+        "compare_at_price": out.get("compare_at_price"),
+    }
     return out
 
 
@@ -77,19 +222,26 @@ async def fetch_shopify_product_json(url: str) -> dict[str, Any]:
     if not handle:
         return {}
     base = _base_url(url)
-    api_url = urljoin(base + "/", f"products/{handle}.js")
-    try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(api_url, headers={"User-Agent": BROWSER_UA, "Accept": "application/json"})
-            if not resp.is_success:
-                return {}
-            data = resp.json()
-    except Exception:
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    out = _map_shopify_product(data)
-    return out
+    # Try .js (Ajax API) then .json (Storefront JSON) for richer payload
+    for suffix in (".js", ".json"):
+        api_url = urljoin(base + "/", f"products/{handle}{suffix}")
+        try:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                resp = await client.get(api_url, headers={"User-Agent": BROWSER_UA, "Accept": "application/json"})
+                if not resp.is_success:
+                    continue
+                data = resp.json()
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        # .json wraps product under "product" key
+        product = data.get("product") if isinstance(data.get("product"), dict) else data
+        if isinstance(product, dict) and product.get("title"):
+            out = _map_shopify_product(product)
+            if out:
+                return out
+    return {}
 
 
 async def fetch_shopify_products_json(url: str) -> dict[str, Any]:

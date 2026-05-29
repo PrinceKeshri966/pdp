@@ -130,6 +130,7 @@ async def seo_agent(state: AgentState) -> AgentState:
         scrape_html=state.get("scrape_html") or "",
         dom_technical_seo=dom_facts,
         page_main_summary=(state.get("page_contexts") or {}).get("main"),
+        browser_capture=state.get("browser_capture"),
     )
 
     structured = state_dict(state, "json_structured_data")

@@ -501,6 +501,7 @@ async def context_router_agent(state: AgentState) -> AgentState:
         scrape_html=scrape_html,
         dom_technical_seo=dom_facts,
         page_main_summary=page_contexts.get("main"),
+        browser_capture=state.get("browser_capture"),
     )
 
     duration_ms = int((time.monotonic() - t0) * 1000)

@@ -10,10 +10,13 @@ from urllib.parse import urlparse
 PAGE_TYPES = [
     "homepage",
     "pdp",
-    "saas_landing",
-    "blog",
-    "marketplace",
     "category_page",
+    "collection",
+    "blog",
+    "about_page",
+    "search_page",
+    "saas_landing",
+    "marketplace",
     "local_business",
     "docs",
     "comparison_page",
@@ -24,7 +27,12 @@ _PDP_PATH = re.compile(
     r"/(product|products|p|item|sku|dp|pd|buy|shop/[^/]+/[^/]+)(/|$)",
     re.I,
 )
-_CATEGORY_PATH = re.compile(r"/(category|categories|collection|collections|c/|cat/)(/|$)", re.I)
+_CATEGORY_PATH = re.compile(
+    r"/(category|categories|collection|collections|c/|cat/|shop/[^/]+/?$)(/|$)",
+    re.I,
+)
+_ABOUT_PATH = re.compile(r"/(about|our-story|company|who-we-are|about-us)(/|$)", re.I)
+_SEARCH_PATH = re.compile(r"/(search|find)(/|\?|$)", re.I)
 _BLOG_PATH = re.compile(r"/(blog|article|post|news|insights|resources)(/|$)", re.I)
 _DOCS_PATH = re.compile(r"/(docs|documentation|api|guide|help|support)(/|$)", re.I)
 _COMPARE_PATH = re.compile(r"/(compare|vs|versus|alternatives)(/|$)", re.I)
@@ -78,7 +86,14 @@ def detect_page_type(
         reasons.append("URL matches product path pattern")
     if _CATEGORY_PATH.search(f"/{path}"):
         scores["category_page"] += 2.5
+        scores["collection"] += 2.5
         reasons.append("URL matches category/collection path")
+    if _ABOUT_PATH.search(f"/{path}"):
+        scores["about_page"] += 2.8
+        reasons.append("URL matches about page path")
+    if _SEARCH_PATH.search(f"/{path}") or "?" in (url or "") and re.search(r"[?&]q=", url or "", re.I):
+        scores["search_page"] += 2.8
+        reasons.append("URL matches search page")
     if _BLOG_PATH.search(f"/{path}"):
         scores["blog"] += 2.5
         reasons.append("URL matches blog/article path")

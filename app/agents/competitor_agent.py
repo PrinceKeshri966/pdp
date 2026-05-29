@@ -19,6 +19,8 @@ from app.agents.page_features import (
 from app.agents.page_fetch import fetch_page_markdown
 from app.agents.state import AgentState, state_dict
 from app.core.cache import cache_get, cache_key, cache_set, competitor_cache_ttl
+from app.agents.competitor_intelligence import synthesize_competitor_intelligence
+from app.core.browser_capture.competitor_benchmark import build_benchmark_metrics
 from app.core.demo_mode import is_demo_mode
 from app.core.logging import get_logger
 
@@ -218,6 +220,43 @@ async def competitor_agent(state: AgentState) -> AgentState:
 
     data_source = "live_scrape" if scraped else ("user_only" if not urls else "partial")
 
+    benchmark_metrics = build_benchmark_metrics(
+        your_features=you,
+        competitor_features=[s["features"] for s in sites if s.get("role") == "competitor" and s.get("scrape_ok")],
+        your_lighthouse=(state.get("browser_capture") or {}).get("lighthouse"),
+        your_schema=(state.get("browser_capture") or {}).get("schema_validation"),
+    )
+    feature_comparison = {
+        "product_images_avg": _avg_feature(sites, "images_count"),
+        "description_word_count_avg": _avg_feature(sites, "page_word_count"),
+        "has_video_pct": round(
+            100 * sum(1 for s in sites[1:] if s.get("scrape_ok") and s["features"].get("has_video"))
+            / max(scraped, 1),
+            0,
+        ),
+        "has_size_guide_pct": round(
+            100
+            * sum(1 for s in sites[1:] if s.get("scrape_ok") and s["features"].get("has_size_guide"))
+            / max(scraped, 1),
+            0,
+        ),
+        "has_reviews_pct": round(
+            100
+            * sum(1 for s in sites[1:] if s.get("scrape_ok") and s["features"].get("has_reviews"))
+            / max(scraped, 1),
+            0,
+        ),
+        "avg_review_count": _avg_feature(sites, "review_count"),
+    }
+    intelligence = synthesize_competitor_intelligence(
+        sites=sites,
+        structured=structured,
+        gaps=gaps,
+        wins=wins,
+        feature_comparison=feature_comparison,
+        benchmark_metrics=benchmark_metrics,
+    ) if scraped else {}
+
     competitor_report: dict[str, Any] = {
         "competitors_analyzed": [_site_label(s["url"]) for s in sites if s["role"] == "competitor"],
         "data_source": data_source,
@@ -226,36 +265,17 @@ async def competitor_agent(state: AgentState) -> AgentState:
             "compare_page_type": compare_page_type,
             "metrics_note": (
                 "Each number is measured on the exact URL shown above (one homepage or one product page per site), "
-                "from live HTML at audit time — not sitewide averages."
+                "from live rendered DOM at audit time — not sitewide averages."
             ),
             "sites": sites,
             "rows": rows,
         },
+        "benchmark_metrics": benchmark_metrics,
         "your_gaps_vs_competitors": gaps,
         "winning_patterns": wins,
         "opportunities": gaps[:5],
-        "feature_comparison": {
-            "product_images_avg": _avg_feature(sites, "images_count"),
-            "description_word_count_avg": _avg_feature(sites, "page_word_count"),
-            "has_video_pct": round(
-                100 * sum(1 for s in sites[1:] if s.get("scrape_ok") and s["features"].get("has_video"))
-                / max(scraped, 1),
-                0,
-            ),
-            "has_size_guide_pct": round(
-                100
-                * sum(1 for s in sites[1:] if s.get("scrape_ok") and s["features"].get("has_size_guide"))
-                / max(scraped, 1),
-                0,
-            ),
-            "has_reviews_pct": round(
-                100
-                * sum(1 for s in sites[1:] if s.get("scrape_ok") and s["features"].get("has_reviews"))
-                / max(scraped, 1),
-                0,
-            ),
-            "avg_review_count": _avg_feature(sites, "review_count"),
-        },
+        "feature_comparison": feature_comparison,
+        **intelligence,
     }
 
     duration_ms = int((time.monotonic() - t0) * 1000)

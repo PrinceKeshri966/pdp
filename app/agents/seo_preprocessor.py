@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.agents.scraper_agent import _extract_dom_metadata
+from app.core.extraction.schema_graph import schema_flags_for_seo
 
 _CTA_IN_META = re.compile(
     r"\b(shop now|buy now|order|get started|learn more|sign up|try free|book now)\b",
@@ -93,30 +94,29 @@ def _count_links(html: str, markdown: str, base_url: str) -> tuple[int, int]:
 
 
 def _schema_types(html: str, dom: dict[str, Any]) -> dict[str, Any]:
-    types: list[str] = []
-    html_l = (html or "").lower()
-    for t, label in (
-        ("product", "Product"),
-        ("faqpage", "FAQPage"),
-        ("breadcrumb", "BreadcrumbList"),
-        ("review", "Review"),
-        ("organization", "Organization"),
-        ("website", "WebSite"),
-    ):
-        if re.search(rf'["\']@type["\']\s*:\s*["\']{t}["\']', html_l):
-            types.append(label)
-    if dom.get("product_schema_present") and "Product" not in types:
-        types.append("Product")
-    if dom.get("faq_schema_present") and "FAQPage" not in types:
-        types.append("FAQPage")
-    return {
-        "detected": bool(types),
-        "types": types,
-        "has_product_schema": bool(dom.get("product_schema_present")) or "Product" in types,
-        "has_faq_schema": bool(dom.get("faq_schema_present")) or "FAQPage" in types,
-        "has_review_schema": "Review" in types,
-        "has_breadcrumb_schema": "BreadcrumbList" in types,
-    }
+    """JSON-LD graph parsing — replaces regex-only @type detection."""
+    schema = schema_flags_for_seo(html or "")
+    if dom.get("product_schema_present") and not schema.get("has_product_schema"):
+        schema["has_product_schema"] = True
+        if "Product" not in schema["types"]:
+            schema["types"].append("Product")
+    if dom.get("faq_schema_present") and not schema.get("has_faq_schema"):
+        schema["has_faq_schema"] = True
+        if "FAQPage" not in schema["types"]:
+            schema["types"].append("FAQPage")
+    schema["detected"] = bool(schema.get("types"))
+    return schema
+
+
+def _sync_schema_flags(schema: dict[str, Any]) -> dict[str, Any]:
+    """Reconcile boolean schema flags after merging browser_capture detected_types."""
+    types = schema.get("types") or []
+    schema["has_product_schema"] = bool(schema.get("has_product_schema")) or "Product" in types
+    schema["has_faq_schema"] = bool(schema.get("has_faq_schema")) or "FAQPage" in types
+    schema["has_review_schema"] = bool(schema.get("has_review_schema")) or "Review" in types
+    schema["has_breadcrumb_schema"] = bool(schema.get("has_breadcrumb_schema")) or "BreadcrumbList" in types
+    schema["detected"] = bool(types)
+    return schema
 
 
 def _keyword_stats(text: str, title: str, h1: str, meta: str) -> dict[str, Any]:
@@ -154,31 +154,37 @@ def extract_seo_facts(
     scrape_html: str = "",
     dom_technical_seo: dict[str, Any] | None = None,
     page_main_summary: dict[str, Any] | None = None,
+    browser_capture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Compact structured SEO facts for agents and report merge."""
+    """Compact structured SEO facts — prefers rendered DOM from browser capture."""
     dom = dict(dom_technical_seo or {})
     if scrape_html and not dom.get("title_tag"):
         dom = {**dom, **_extract_dom_metadata(scrape_html)}
 
     html = scrape_html or ""
-    text = _body_text(markdown, html)
-    title = dom.get("title_tag") or (page_main_summary or {}).get("title") or ""
-    meta = dom.get("meta_description") or (page_main_summary or {}).get("meta_description") or ""
+    dom_seo = (browser_capture or {}).get("dom_seo") or {}
+    use_dom = bool(dom_seo.get("source") == "rendered_dom")
 
-    h1_values: list[str] = []
-    h2_count = h3_count = 0
+    text = _body_text("" if use_dom and html else markdown, html)
+    title = dom.get("title_tag") or dom_seo.get("title_tag") or (page_main_summary or {}).get("title") or ""
+    meta = dom.get("meta_description") or dom_seo.get("meta_description") or (page_main_summary or {}).get("meta_description") or ""
+
+    h1_values: list[str] = list(dom_seo.get("h1_values") or []) if use_dom else []
+    h2_count = int(dom_seo.get("h2_count", 0)) if use_dom else 0
+    h3_count = int(dom_seo.get("h3_count", 0)) if use_dom else 0
     for m in _H_HTML.finditer(html):
         tag, inner = m.group(1).lower(), unescape(re.sub(r"<[^>]+>", " ", m.group(2))).strip()
-        if tag == "h1" and inner:
+        if tag == "h1" and inner and inner not in h1_values:
             h1_values.append(inner)
         elif tag == "h2":
             h2_count += 1
         elif tag == "h3":
             h3_count += 1
-    for m in _H1_MD.finditer(markdown):
-        h1_values.append(m.group(1).strip())
-    h2_count += len(_H2_MD.findall(markdown))
-    h3_count += len(_H3_MD.findall(markdown))
+    if not use_dom:
+        for m in _H1_MD.finditer(markdown):
+            h1_values.append(m.group(1).strip())
+        h2_count += len(_H2_MD.findall(markdown))
+        h3_count += len(_H3_MD.findall(markdown))
 
     h1_val = h1_values[0] if h1_values else ""
     title_score, title_issues = _score_band(len(title), 50, 60, 70)
@@ -198,7 +204,16 @@ def extract_seo_facts(
     kw = _keyword_stats(text, title, h1_val, meta)
     readability, read_score = _readability_label(text)
     word_count = len(text.split()) if text else 0
+    schema_val = (browser_capture or {}).get("schema_validation") or {}
+    tech_crawl = (browser_capture or {}).get("technical_crawl") or {}
+    lighthouse = (browser_capture or {}).get("lighthouse") or {}
     schema = _schema_types(html, dom)
+    if schema_val.get("detected_types"):
+        schema["types"] = list(dict.fromkeys(schema["types"] + schema_val["detected_types"]))
+        schema["detected"] = True
+        schema["validation"] = schema_val.get("schemas", {})
+        schema["score"] = round((schema_val.get("overall_score") or 80) / 10, 1)
+    schema = _sync_schema_flags(schema)
     path = urlparse(url).path or "/"
     path_tokens = [t for t in re.split(r"[-_/]+", path.lower()) if len(t) > 2]
 
@@ -237,30 +252,16 @@ def extract_seo_facts(
             "descriptive_alt": descriptive,
             "score": 8.0 if missing_alt == 0 and total_images else (5.0 if total_images else 3.0),
         },
-        "structured_data": {**schema, "score": 8.0 if schema["detected"] else 3.0},
+        "structured_data": {**schema, "score": schema.get("score") or (8.0 if schema["detected"] else 3.0)},
         "links": {
             "internal_count": internal,
             "external_count": external,
             "broken_links_risk": False,
             "score": 7.0 if internal >= 3 else 5.0,
         },
-        "technical_seo": {
-            "canonical_present": bool(dom.get("canonical_present")),
-            "open_graph_present": bool(dom.get("open_graph_present")),
-            "twitter_card_present": bool(re.search(r"twitter:card|name=[\"']twitter:", html, re.I)) if html else False,
-            "hreflang_present": bool(re.search(r"hreflang|rel=[\"']alternate[\"'][^>]*hreflang", html, re.I)) if html else False,
-            "mobile_friendly": bool(re.search(r"viewport", html, re.I)) if html else True,
-            "core_web_vitals_risk": "high" if large_images and render_blocking else ("medium" if large_images else "low"),
-            "page_speed_signals": {
-                "large_images_detected": large_images,
-                "render_blocking_scripts": render_blocking,
-                "lazy_loading_used": lazy_loading,
-                "estimated_lcp_risk": "high" if large_images else "medium",
-                "estimated_cls_risk": "low" if lazy_loading else "medium",
-            },
-            "pagination_signals": bool(re.search(r'rel=["\']next["\']|page=\d+', html, re.I)) if html else False,
-            "score": 7.5,
-        },
+        "technical_seo": _build_technical_seo(
+            dom, dom_seo, html, tech_crawl, lighthouse, large_images, render_blocking, lazy_loading
+        ),
         "url_structure": {
             "path": path,
             "is_seo_friendly": len(path) < 80 and " " not in path,
@@ -268,4 +269,62 @@ def extract_seo_facts(
             "issues": [],
         },
         "_deterministic": True,
+        "_source": "rendered_dom" if use_dom else "markdown",
+    }
+
+
+def _build_technical_seo(
+    dom: dict,
+    dom_seo: dict,
+    html: str,
+    tech_crawl: dict,
+    lighthouse: dict,
+    large_images: bool,
+    render_blocking: bool,
+    lazy_loading: bool,
+) -> dict[str, Any]:
+    cwv = lighthouse.get("core_web_vitals") or {}
+    lcp_rating = (cwv.get("LCP") or {}).get("rating", "unknown")
+    cls_rating = (cwv.get("CLS") or {}).get("rating", "unknown")
+    perf_score = (lighthouse.get("categories") or {}).get("performance")
+
+    cwv_risk = "high" if lcp_rating == "poor" or cls_rating == "poor" else (
+        "medium" if lcp_rating == "needs_improvement" else "low"
+    )
+    if not lighthouse.get("available"):
+        cwv_risk = "high" if large_images and render_blocking else ("medium" if large_images else "low")
+
+    tech_score = tech_crawl.get("score") or 7.5
+    if perf_score is not None:
+        tech_score = round((tech_score + perf_score / 10) / 2, 1)
+
+    return {
+        "canonical_present": bool(dom.get("canonical_present") or dom_seo.get("canonical_present")),
+        "open_graph_present": bool(dom.get("open_graph_present") or dom_seo.get("open_graph_present")),
+        "twitter_card_present": bool(
+            dom_seo.get("twitter_card_present")
+            or (tech_crawl.get("twitter_cards") or {}).get("present")
+            or (re.search(r"twitter:card|name=[\"']twitter:", html, re.I) if html else False)
+        ),
+        "hreflang_present": bool(
+            dom_seo.get("hreflang_present") or (tech_crawl.get("hreflang") or {}).get("present")
+        ),
+        "mobile_friendly": bool(dom_seo.get("mobile_friendly") or re.search(r"viewport", html, re.I) if html else True),
+        "robots_txt_found": bool((tech_crawl.get("robots_txt") or {}).get("found")),
+        "sitemap_found": bool((tech_crawl.get("sitemap") or {}).get("found")),
+        "redirect_count": (tech_crawl.get("redirects") or {}).get("count", 0),
+        "technical_issues": tech_crawl.get("issues", []),
+        "lighthouse": lighthouse.get("categories") if lighthouse.get("available") else None,
+        "core_web_vitals": cwv if lighthouse.get("available") else None,
+        "core_web_vitals_risk": cwv_risk,
+        "page_speed_signals": {
+            "large_images_detected": large_images,
+            "render_blocking_scripts": render_blocking,
+            "lazy_loading_used": lazy_loading,
+            "estimated_lcp_risk": lcp_rating if lcp_rating != "unknown" else ("high" if large_images else "medium"),
+            "estimated_cls_risk": cls_rating if cls_rating != "unknown" else ("low" if lazy_loading else "medium"),
+        },
+        "pagination_signals": bool(re.search(r'rel=["\']next["\']|page=\d+', html, re.I)) if html else False,
+        "score": tech_score,
+        "confidence": tech_crawl.get("confidence") or (0.75 if lighthouse.get("available") else 0.5),
     }

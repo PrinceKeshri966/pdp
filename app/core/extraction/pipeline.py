@@ -13,9 +13,13 @@ from app.core.extraction.dom_extractors import (
     extract_network_product_payloads,
     extract_next_data,
     extract_open_graph,
+    extract_review_from_network,
     extract_review_widgets,
 )
+from app.core.extraction.field_confidence import build_field_confidence_map
 from app.core.extraction.json_ld import extract_json_ld_product
+from app.core.extraction.pdp_signals import extract_all_pdp_signals, extract_variants
+from app.core.extraction.platform_parity import reconcile_review_count
 from app.core.extraction.platform_api import fetch_platform_api_product
 from app.core.extraction.voter import vote_product_fields
 from app.core.logging import get_logger
@@ -160,6 +164,22 @@ async def run_extraction_pipeline(
     network = extract_network_product_payloads(payloads)
     platform_api = await fetch_platform_api_product(url, plat, network_payloads=payloads)
 
+    # Shopify / large HTML: supplement Playwright HTML with static fetch for theme-aware signals
+    signal_html = html
+    is_shopify = plat == "shopify" or "shopify-section" in (html or "").lower() or "cdn.shopify.com" in (html or "").lower()
+    if is_shopify:
+        try:
+            import httpx
+            from app.core.html_metadata import BROWSER_UA
+            resp = httpx.get(url, headers={"User-Agent": BROWSER_UA}, follow_redirects=True, timeout=15)
+            if resp.is_success and len(resp.text) > len(html or ""):
+                signal_html = resp.text
+                extra_dom = extract_dom_selectors(signal_html)
+                if extra_dom.get("price"):
+                    dom["price"] = extra_dom["price"]
+        except Exception:
+            pass
+
     llm: dict[str, Any] = {}
     pre_merge = {**schema, **platform_api, **network, **dom}
     if second_pass or not pre_merge.get("price") or not pre_merge.get("product_name"):
@@ -174,7 +194,35 @@ async def run_extraction_pipeline(
         next_data=next_data,
         llm=llm,
     )
+
+    # Review count: prefer visible widget when network/API diverges >15%
+    review_dom = dom.get("review_count")
+    review_net = network.get("review_count") or (extract_review_from_network(payloads) or {}).get("review_count")
+    review_api = platform_api.get("review_count")
+    reconciled = reconcile_review_count(review_dom, review_net, review_api)
+    if reconciled is not None:
+        merged["review_count"] = reconciled
+        merged["has_reviews"] = True
+
+    # Enterprise PDP signals: FAQ, trust, shipping, returns, variants, inventory
+    pdp_signals = extract_all_pdp_signals(signal_html, platform_data={**platform_api, **dom})
+    variant_result = extract_variants(
+        signal_html,
+        platform_variants=merged.get("variants") or platform_api.get("variants"),
+        dom_picker_count=dom.get("variant_picker_count"),
+    )
+    merged["variant_count"] = variant_result.value
+    merged["variant_picker_count"] = variant_result.value
+    if pdp_signals.get("inventory") is not None:
+        merged["inventory_quantity"] = pdp_signals["inventory"]
+    if pdp_signals.get("trust_badges"):
+        merged["trust_badges"] = pdp_signals["trust_badges"]
+    provider = pdp_signals.get("review_provider") or dom.get("review_provider")
+    if provider:
+        merged["review_provider"] = provider
+
     structured = _apply_defaults(merged, url)
+    structured["_pdp_signals"] = pdp_signals
     structured["_field_sources"] = field_meta
     structured["_extraction_strategies"] = {
         "schema": bool(schema),
@@ -192,6 +240,13 @@ async def run_extraction_pipeline(
         structured,
         scrape_validation=scrape_validation,
         field_meta=field_meta,
+        pdp_signals=pdp_signals,
+    )
+    structured["_field_confidence"] = build_field_confidence_map(
+        structured,
+        field_meta=field_meta,
+        pdp_signals=pdp_signals,
+        schema_graph=pdp_signals.get("schema_graph"),
     )
     structured["_extraction_confidence"] = extraction_confidence
 

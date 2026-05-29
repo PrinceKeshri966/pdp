@@ -99,10 +99,11 @@ async def stream_graph_progress(
     yield (
         {
             "type": "done",
-            "label": "Analysis complete",
-            "status": "completed",
-            "completed_count": len(pipeline),
+            "label": "Analysis complete" if state.get("status") != "failed" else "Analysis stopped",
+            "status": "failed" if state.get("status") == "failed" else "completed",
+            "completed_count": len(completed),
             "total_count": len(pipeline),
+            "scrape_gate": ((state.get("scrape_validation") or {}).get("hard_fail")),
         },
         state,
     )
